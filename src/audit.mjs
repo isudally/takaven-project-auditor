@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname, sep, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,6 +21,56 @@ const CODEX_ENV_ALLOWLIST = [
   'TEMP', 'TMP', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA',
   'CODEX_HOME', 'LANG', 'LC_ALL', 'CI', 'TERM', 'TERM_PROGRAM'
 ];
+
+const SNAPSHOT_SKIP_DIRS = new Set(['.git', 'node_modules', 'dist', 'build', 'coverage', '.next']);
+const SNAPSHOT_SKIP_FILES = /^(?:\.env(?:\..*)?|.*\.(?:pem|key|p12|pfx|sqlite|db))$/i;
+const SNAPSHOT_MAX_FILES = 200;
+const SNAPSHOT_MAX_FILE_BYTES = 64 * 1024;
+const SNAPSHOT_MAX_TOTAL_BYTES = 512 * 1024;
+
+function redactSnapshotText(text) {
+  return text
+    .replace(/(^|\n)(\s*(?:api[_-]?key|secret|token|password|passwd|private[_-]?key)\s*[:=]\s*)[^\r\n]+/gi, '$1$2<REDACTED>')
+    .replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|AKIA[A-Z0-9]{12,})\b/g, '<REDACTED>');
+}
+
+export function collectRepositorySnapshot(targetRoot) {
+  const files = [];
+  const excerpts = [];
+  let totalBytes = 0;
+  function visit(directory, relativeDirectory = '') {
+    if (files.length >= SNAPSHOT_MAX_FILES || totalBytes >= SNAPSHOT_MAX_TOTAL_BYTES) return;
+    for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      if (files.length >= SNAPSHOT_MAX_FILES || totalBytes >= SNAPSHOT_MAX_TOTAL_BYTES) break;
+      const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        if (!SNAPSHOT_SKIP_DIRS.has(entry.name)) visit(join(directory, entry.name), relativePath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      files.push(relativePath);
+      if (SNAPSHOT_SKIP_FILES.test(entry.name)) {
+        excerpts.push(`--- ${relativePath} ---\n[content withheld by controller]`);
+        continue;
+      }
+      const size = statSync(join(directory, entry.name)).size;
+      if (size > SNAPSHOT_MAX_FILE_BYTES || totalBytes + size > SNAPSHOT_MAX_TOTAL_BYTES) {
+        excerpts.push(`--- ${relativePath} ---\n[content omitted: size limit]`);
+        continue;
+      }
+      const buffer = readFileSync(join(directory, entry.name));
+      if (buffer.includes(0)) {
+        excerpts.push(`--- ${relativePath} ---\n[binary content omitted]`);
+        continue;
+      }
+      totalBytes += size;
+      excerpts.push(`--- ${relativePath} ---\n${redactSnapshotText(buffer.toString('utf8'))}`);
+    }
+  }
+  visit(targetRoot);
+  const truncation = files.length >= SNAPSHOT_MAX_FILES || totalBytes >= SNAPSHOT_MAX_TOTAL_BYTES ? '\n[Snapshot truncated by controller limits.]' : '';
+  return `Files observed by the trusted controller (${files.length}):\n${files.join('\n')}${truncation}\n\nText evidence read by the trusted controller:\n${excerpts.join('\n\n')}`;
+}
 
 function codexEnvironment() {
   const env = {};
@@ -168,7 +218,8 @@ async function main(){
     const name=basename(originalSource.replace(/[\\/]+$/, '')).replace(/\.git$/,'');
     const contract=readFileSync(join(root,'AGENTS.md'),'utf8');
     const mission=readFileSync(join(root,'prompts','audit.md'),'utf8');
-    const prompt=promptForRun({projectName:name,commit,mode:args.mode,contract,mission,targetPath:checkout});
+    const snapshot=collectRepositorySnapshot(checkout);
+    const prompt=promptForRun({projectName:name,commit,mode:args.mode,contract,mission,targetPath:checkout,snapshot});
     const schema=join(root,'report.schema.json');
     const responsePath=join(scratch,'codex-response.json');
     const codexArgs=buildCodexArgs({mode:args.mode,schema,responsePath});
@@ -189,4 +240,6 @@ async function main(){
   }
 }
 
-main().catch(err=>{console.error(`ERROR: ${err.message}`);process.exitCode=1});
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch(err=>{console.error(`ERROR: ${err.message}`);process.exitCode=1});
+}

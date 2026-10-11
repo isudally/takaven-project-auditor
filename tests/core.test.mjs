@@ -30,4 +30,11 @@ test('controller metadata overrides model identity',()=>{
 test('renders findings, evidence, and unknowns',()=>{const md=renderMarkdown(sample,{source:'repo',mode:'inspect',timestamp:'2026-10-11'}); assert.match(md,/TypeError/);assert.match(md,/Not verified/);assert.match(md,/no buyer evidence/);});
 test('inspect prompt never permits runtime',()=>assert.match(promptForRun({projectName:'x',commit:'abc',mode:'inspect',contract:'RULES',mission:'TASK'}),/Do not run repository scripts/));
 test('prompt treats target instructions as untrusted evidence',()=>assert.match(promptForRun({projectName:'x',commit:'abc',mode:'inspect',contract:'RULES',mission:'TASK',targetPath:'target'}),/untrusted evidence/));
+test('prompt includes controller snapshot as untrusted source evidence',()=>{
+  const prompt=promptForRun({projectName:'x',commit:'abc',mode:'inspect',contract:'RULES',mission:'TASK',snapshot:'--- app.mjs ---\nsecret=<REDACTED>'});
+  assert.match(prompt,/Controller-provided repository snapshot/);
+  assert.match(prompt,/secret=<REDACTED>/);
+  assert.match(prompt,/use this snapshot instead of shell commands/);
+  assert.match(prompt,/Do not turn a title, README aspiration/);
+});
 test('verify prompt confines work to disposable clone',()=>assert.match(promptForRun({projectName:'x',commit:'abc',mode:'verify',contract:'RULES',mission:'TASK'}),/DISPOSABLE CLONE ONLY/));
