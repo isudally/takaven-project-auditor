@@ -137,7 +137,7 @@ function prioritizeSnapshotEntries(entries) {
 export function collectRepositorySnapshot(targetRoot) {
   const entries = collectSnapshotEntries(targetRoot);
   const orderedEntries = prioritizeSnapshotEntries(entries);
-  const excerpts = [];
+  const evidenceFiles = [];
   const readPaths = [];
   const withheldPaths = [];
   const omittedPaths = [];
@@ -169,23 +169,39 @@ export function collectRepositorySnapshot(targetRoot) {
         }
       }
     }
-    excerpts.push(`--- ${entry.relativePath} ---\n${evidence}`);
+    const fileEvidence = { path: entry.relativePath, size: entry.size };
+    if (readPaths.includes(entry.relativePath)) {
+      fileEvidence.status = 'read';
+      fileEvidence.content = evidence;
+    } else if (withheldPaths.includes(entry.relativePath)) {
+      fileEvidence.status = 'withheld';
+    } else if (binaryPaths.includes(entry.relativePath)) {
+      fileEvidence.status = 'binary_omitted';
+    } else {
+      fileEvidence.status = 'omitted';
+    }
+    evidenceFiles.push(fileEvidence);
   }
   const inventory = entries.map(entry => entry.relativePath);
   const inventoryShown = inventory.slice(0, SNAPSHOT_MAX_INVENTORY_FILES);
-  const inventoryNote = inventory.length > inventoryShown.length ? `\n[Inventory truncated: ${inventory.length - inventoryShown.length} paths not listed.]` : '';
-  const formatPaths = paths => paths.length ? paths.join(', ') : 'none';
-  const coverage = [
-    'Coverage summary from the trusted controller:',
-    `Indexed files: ${entries.length}; content read: ${readPaths.length}; content withheld: ${withheldPaths.length}; content omitted: ${omittedPaths.length}; binary omitted: ${binaryPaths.length}.`,
-    `Source bytes read: ${totalBytes}; source budget: ${SNAPSHOT_MAX_TOTAL_BYTES}.`,
-    `Content read in priority order: ${formatPaths(readPaths)}`,
-    `Content withheld: ${formatPaths(withheldPaths)}`,
-    `Content omitted or truncated: ${formatPaths(omittedPaths)}`,
-    `Binary content omitted: ${formatPaths(binaryPaths)}`,
-    'This is bounded evidence, not proof that unlisted or omitted application paths are absent or correct.',
-  ].join('\n');
-  return `Files observed by the trusted controller (${entries.length}):\n${inventoryShown.join('\n')}${inventoryNote}\n\n${coverage}\n\nText evidence read by the trusted controller in priority order:\n${excerpts.join('\n\n')}`;
+  return {
+    type: 'controller_repository_snapshot',
+    version: 1,
+    authority: 'trusted_controller',
+    coverage: {
+      indexed_file_count: entries.length,
+      indexed_files: inventoryShown,
+      indexed_files_truncated: inventory.length > inventoryShown.length,
+      read_files: readPaths,
+      omitted_files: omittedPaths,
+      withheld_files: withheldPaths,
+      binary_files: binaryPaths,
+      bytes_examined: totalBytes,
+      byte_budget: SNAPSHOT_MAX_TOTAL_BYTES,
+    },
+    files: evidenceFiles,
+    note: 'This is bounded evidence, not proof that unlisted or omitted application paths are absent or correct.',
+  };
 }
 
 function codexEnvironment() {
@@ -222,7 +238,7 @@ export function buildCodexArgs({ mode, schema, responsePath }) {
 }
 
 function resolveCodexCommand(binary, args) {
-  if (process.platform === 'win32' && /\.(?:cjs|mjs|js)$/i.test(binary)) {
+  if (/\.(?:cjs|mjs|js)$/i.test(binary)) {
     return { file: process.execPath, args: [binary, ...args] };
   }
   return { file: binary, args };
@@ -296,8 +312,8 @@ function cloneLocalRepository(source, checkout, scratch, ref) {
     // Git for Windows may be unable to start its local transport inside restricted
     // hosts. Exporting the pinned tree is still a disposable, committed snapshot
     // and avoids weakening the integration test or copying dirty working files.
-    const revision = ref || 'HEAD';
-    const commit = command('git', ['-C', source, 'rev-parse', revision], { timeout: 60000 });
+    const revision = ref ? `${ref}^{commit}` : 'HEAD^{commit}';
+    const commit = command('git', ['-C', source, 'rev-parse', '--verify', revision], { timeout: 60000 });
     const archive = join(scratch, 'source-tree.tar');
     rmSync(checkout, { recursive: true, force: true });
     mkdirSync(checkout, { recursive: true });
@@ -305,6 +321,19 @@ function cloneLocalRepository(source, checkout, scratch, ref) {
     command('tar', ['-xf', archive, '-C', checkout], { timeout: 120000 });
     return { commit, archiveFallback: true };
   }
+}
+
+function inspectLocalWorkingTree(source) {
+  const status = command('git', ['-C', source, 'status', '--porcelain=v1', '--untracked-files=all']);
+  const changes = status ? status.split(/\r?\n/).filter(Boolean) : [];
+  return {
+    source_type: 'local',
+    uncommitted_changes_excluded: changes.length > 0,
+    uncommitted_change_count: changes.length,
+    warning: changes.length > 0
+      ? `${changes.length} local uncommitted change(s) were excluded; only the committed Git snapshot was audited.`
+      : 'No local uncommitted changes were excluded.',
+  };
 }
 
 async function main(){
@@ -319,6 +348,12 @@ async function main(){
   let success=false;
   try {
     const checkout=join(scratch,'repo');
+    const workingTree = args.path ? inspectLocalWorkingTree(args.path) : {
+      source_type: 'remote',
+      uncommitted_changes_excluded: false,
+      uncommitted_change_count: 0,
+      warning: 'Remote repository snapshot; local working-tree changes are not applicable.',
+    };
     let commit;
     console.log(`Cloning ${args.repo?'GitHub repository':'local repository'} into disposable workspace...`);
     let archiveFallback = false;
@@ -329,25 +364,26 @@ async function main(){
     } else {
       command('git',['clone','--quiet','--depth','1','--no-tags','--',args.repo,checkout],{timeout:120000});
     }
-    if (args.ref && !archiveFallback) { command('git',['fetch','--quiet','--depth','1','origin',args.ref],{cwd:checkout,timeout:120000});command('git',['checkout','--quiet','FETCH_HEAD'],{cwd:checkout}); commit=command('git',['rev-parse','HEAD'],{cwd:checkout}); }
+    if (args.ref && !archiveFallback) { command('git',['fetch','--quiet','--depth','1','origin','--',args.ref],{cwd:checkout,timeout:120000});command('git',['checkout','--quiet','--detach','FETCH_HEAD'],{cwd:checkout}); commit=command('git',['rev-parse','HEAD'],{cwd:checkout}); }
     if (!args.path) commit=command('git',['rev-parse','HEAD'],{cwd:checkout});
     const name=basename(originalSource.replace(/[\\/]+$/, '')).replace(/\.git$/,'');
     const contract=readFileSync(join(root,'AGENTS.md'),'utf8');
     const mission=readFileSync(join(root,'prompts','audit.md'),'utf8');
     const snapshot=collectRepositorySnapshot(checkout);
-    const prompt=promptForRun({projectName:name,commit,mode:args.mode,contract,mission,targetPath:checkout,snapshot});
+    const coverage = { ...snapshot.coverage, working_tree: workingTree };
+    const prompt=promptForRun({projectName:name,commit,mode:args.mode,contract,mission,targetPath:checkout,snapshot:{ ...snapshot, coverage }});
     const schema=join(root,'report.schema.json');
     const responsePath=join(scratch,'codex-response.json');
     const codexArgs=buildCodexArgs({mode:args.mode,schema,responsePath});
     console.log(`Auditing ${name} at ${commit.slice(0,12)} [${args.mode}]...`);
     await runCodex({binary:process.env.TAKAVEN_CODEX_BIN||'codex',args:codexArgs,cwd:scratch,prompt,timeoutMs:configuredTimeout()});
     const modelReport=validateReport(JSON.parse(readFileSync(responsePath,'utf8')),{mode:args.mode});
-    const report=applyTrustedMetadata(modelReport,{project:name,commit,mode:args.mode,source:originalSource,auditedAt:new Date().toISOString()});
+    const report=applyTrustedMetadata(modelReport,{project:name,commit,mode:args.mode,source:originalSource,auditedAt:new Date().toISOString(),coverage});
     // Verify mode changes are never pushed and never leave the disposable workspace.
     mkdirSync(output,{recursive:true});
     writeFileSync(join(output,'report.json'),JSON.stringify(report,null,2)+'\n',{mode:0o600});
     writeFileSync(join(output,'report.md'),renderMarkdown(report,{source:originalSource,mode:args.mode,timestamp:new Date().toISOString()}),{mode:0o600});
-    writeFileSync(join(output,'audit-metadata.json'),JSON.stringify({source:originalSource,commit,mode:args.mode,createdAt:new Date().toISOString(),originalUntouched:true},null,2)+'\n');
+    writeFileSync(join(output,'audit-metadata.json'),JSON.stringify({source:originalSource,commit,mode:args.mode,coverage,createdAt:new Date().toISOString(),originalUntouched:true},null,2)+'\n');
     success=true;
     console.log(`Audit complete: ${output}/report.md\nVerdict: ${report.verdict} | Runtime: ${report.runtime_status}`);
   } finally {

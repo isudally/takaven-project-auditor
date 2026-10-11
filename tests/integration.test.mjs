@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, cpSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, cpSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -14,6 +14,7 @@ function initFixture(tmp){
   assert.equal(run('git',['init','-q',source]).status,0);
   assert.equal(run('git',['-C',source,'add','.']).status,0);
   assert.equal(run('git',['-C',source,'-c','user.email=test@example.com','-c','user.name=test','commit','-qm','fixture']).status,0);
+  assert.equal(run('git',['-C',source,'branch','-M','main']).status,0);
   return source;
 }
 
@@ -22,7 +23,7 @@ function fullFlowScenario(){
   try{
     const source=initFixture(tmp);
     const out=join(tmp,'report');
-    const result=run(process.execPath,[join(project,'src','audit.mjs'),'--path',source,'--mode','inspect','--out',out],{env:{...process.env,TAKAVEN_CODEX_BIN:join(project,'tests','fake-codex.mjs'),TAKAVEN_SCRATCH_ROOT:join(tmp,'scratch')}});
+    const result=run(process.execPath,[join(project,'src','audit.mjs'),'--path',source,'--ref','main','--mode','inspect','--out',out],{env:{...process.env,TAKAVEN_CODEX_BIN:join(project,'tests','fake-codex.mjs'),TAKAVEN_SCRATCH_ROOT:join(tmp,'scratch')}});
     assert.equal(result.status,0, result.stderr);
     assert.equal(existsSync(join(out,'report.md')),true);
     assert.match(readFileSync(join(out,'report.md'),'utf8'),/Synthetic output from contract test/);
@@ -33,6 +34,21 @@ function fullFlowScenario(){
     assert.equal(existsSync(join(source,'report.md')),false);
     const sourceLog=run('git',['-C',source,'status','--porcelain']);
     assert.equal(sourceLog.stdout.trim(),'');
+  } finally {rmSync(tmp,{recursive:true,force:true});}
+}
+
+function dirtyWorkingTreeScenario(){
+  const tmp=makeTemp('auditor-dirty-tree-test');
+  try{
+    const source=initFixture(tmp);
+    writeFileSync(join(source,'local-only.txt'),'uncommitted\n');
+    const out=join(tmp,'report');
+    const result=run(process.execPath,[join(project,'src','audit.mjs'),'--path',source,'--mode','inspect','--out',out],{env:{...process.env,TAKAVEN_CODEX_BIN:join(project,'tests','fake-codex.mjs'),TAKAVEN_SCRATCH_ROOT:join(tmp,'scratch')}});
+    assert.equal(result.status,0,result.stderr);
+    const report=JSON.parse(readFileSync(join(out,'report.json'),'utf8'));
+    assert.equal(report.coverage.working_tree.uncommitted_changes_excluded,true);
+    assert.equal(report.coverage.working_tree.uncommitted_change_count,1);
+    assert.match(readFileSync(join(out,'report.md'),'utf8'),/WARNING: Local uncommitted changes were excluded/);
   } finally {rmSync(tmp,{recursive:true,force:true});}
 }
 
@@ -47,5 +63,6 @@ function reportGuardScenario(){
 
 test('controller integration scenarios', { concurrency: false }, () => {
   fullFlowScenario();
+  dirtyWorkingTreeScenario();
   reportGuardScenario();
 });

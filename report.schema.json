@@ -36,7 +36,34 @@
     "reuse_assessment": {"type": "array", "items": {"type": "string"}},
     "commercial_risks": {"type": "array", "items": {"type": "string"}},
     "unverified": {"type": "array", "items": {"type": "string"}},
-    "next_actions": {"type": "array", "items": {"type": "string"}}
+    "next_actions": {"type": "array", "items": {"type": "string"}},
+    "coverage": {
+      "type": "object",
+      "properties": {
+        "indexed_file_count": {"type": "integer", "minimum": 0},
+        "indexed_files": {"type": "array", "items": {"type": "string"}},
+        "indexed_files_truncated": {"type": "boolean"},
+        "read_files": {"type": "array", "items": {"type": "string"}},
+        "omitted_files": {"type": "array", "items": {"type": "string"}},
+        "withheld_files": {"type": "array", "items": {"type": "string"}},
+        "binary_files": {"type": "array", "items": {"type": "string"}},
+        "bytes_examined": {"type": "integer", "minimum": 0},
+        "byte_budget": {"type": "integer", "minimum": 0},
+        "working_tree": {
+          "type": "object",
+          "properties": {
+            "source_type": {"type": "string", "enum": ["local", "remote"]},
+            "uncommitted_changes_excluded": {"type": "boolean"},
+            "uncommitted_change_count": {"type": "integer", "minimum": 0},
+            "warning": {"type": "string"}
+          },
+          "required": ["source_type", "uncommitted_changes_excluded", "uncommitted_change_count", "warning"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["indexed_file_count", "indexed_files", "indexed_files_truncated", "read_files", "omitted_files", "withheld_files", "binary_files", "bytes_examined", "byte_budget", "working_tree"],
+      "additionalProperties": false
+    }
   },
   "required": ["project", "commit", "verdict", "executive_summary", "runtime_status", "runtime_evidence", "findings", "reuse_assessment", "commercial_risks", "unverified", "next_actions"],
   "additionalProperties": false

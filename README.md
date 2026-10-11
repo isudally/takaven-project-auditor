@@ -12,13 +12,13 @@
 - Machine-readable `report.json` and readable `report.md`.
 - Ready-made hostile-documentation and clean-control fixtures for evaluation.
 
-**Status:** CLI scaffolding, deterministic tests and the first controller-correctness package are implemented. An authenticated Codex inspect run has been completed against the supplied controls, but Codex's command policy blocked source inspection and returned `INCONCLUSIVE`. The AI auditing capability is therefore not production-verified.
+**Status:** The bounded static-audit path is implemented and has been exercised against clean, hostile and real-project snapshots. Inspect mode reads controller-selected source evidence, validates model reports, records coverage and keeps runtime status `NOT RUN`. Runtime verification is not implemented as a secure execution capability yet; `verify` remains an opt-in orchestration path whose command execution depends on external isolation and policy controls.
 
 ### Work package 1 status
 
 The controller now performs strict structural and semantic report validation, rejects unsupported runtime success claims, writes controller-owned project/commit/mode metadata, uses a sanitized Codex environment, applies a hard Codex timeout, cleans up process trees and scratch workspaces, and supports a Windows committed-snapshot fallback when local Git clone transport is blocked by the host.
 
-The model response schema intentionally contains only model-owned fields. Trusted identity and execution metadata are added by the controller after validation and must not be supplied by the model.
+The model response schema intentionally contains only model-owned fields. Trusted identity, execution metadata and inspection coverage are added by the controller after validation and cannot be supplied by the model. Local audits warn when uncommitted changes are excluded because only the committed snapshot is audited.
 
 Work package 1 does **not** establish a complete execution security boundary. Verify mode remains dependent on the next work package: a separate credential-free repository executor, approved command policy, restricted network, independently captured command traces and known-answer evaluation. Do not enable verify mode for unknown repositories carrying production credentials.
 
@@ -61,9 +61,8 @@ Compare claims against known outcomes. Track **false-confidence rate**, evidence
 
 ## Next steps
 
-1. Execute a real Codex-backed audit in a disposable runtime.
-2. Evaluate against the two fixtures plus Playkin at the known broken commit.
-3. Add a locked-down GitHub Actions manual trigger for approved repositories once authentication, secrets and isolation are validated.
-4. Consider scheduled PR/release audits only after on-demand results are reliable.
+1. Prove one isolated runtime-execution workflow with credential-free tooling and independently captured command results.
+2. Keep inspect-mode findings separate from runtime observations and treat any unavailable runtime checks as `NOT RUN`.
+3. Reassess the wrapper after the runtime proof; do not add services or automation without evidence of need.
 
 **Out of scope:** autonomous coding, production changes, multi-agent hierarchy, dashboards, self-hosted model serving and payment/billing services.
