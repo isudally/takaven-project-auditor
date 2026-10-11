@@ -24,9 +24,17 @@ const CODEX_ENV_ALLOWLIST = [
 
 const SNAPSHOT_SKIP_DIRS = new Set(['.git', 'node_modules', 'dist', 'build', 'coverage', '.next']);
 const SNAPSHOT_SKIP_FILES = /^(?:\.env(?:\..*)?|.*\.(?:pem|key|p12|pfx|sqlite|db))$/i;
+const SNAPSHOT_MANIFEST_NAMES = new Set(['package.json', 'pyproject.toml', 'setup.py', 'requirements.txt', 'go.mod', 'cargo.toml', 'pom.xml', 'build.gradle', 'composer.json', 'gemfile', 'mix.exs', 'pubspec.yaml', 'dockerfile', 'makefile', 'justfile']);
+const SNAPSHOT_ENTRY_NAME = /^(?:index|main|app|server|cli|manage|run)\.[^.]+$/i;
+const SNAPSHOT_SOURCE_EXTENSIONS = /\.(?:c|cc|cpp|cs|go|h|java|js|jsx|mjs|cjs|kt|php|py|rb|rs|swift|ts|tsx|vue|svelte)$/i;
+const SNAPSHOT_TEST_SEGMENTS = new Set(['test', 'tests', '__tests__', 'spec', 'e2e']);
+const SNAPSHOT_FLOW_SEGMENTS = new Set(['api', 'app', 'backend', 'config', 'contexts', 'controllers', 'frontend', 'navigation', 'pages', 'routes', 'screens', 'server', 'services', 'state', 'store', 'views', 'web']);
+const SNAPSHOT_DOC_EXTENSIONS = /\.(?:adoc|md|mdx|rst|txt)$/i;
 const SNAPSHOT_MAX_FILES = 200;
 const SNAPSHOT_MAX_FILE_BYTES = 64 * 1024;
 const SNAPSHOT_MAX_TOTAL_BYTES = 512 * 1024;
+const SNAPSHOT_MAX_IMPORT_SCAN_FILES = 80;
+const SNAPSHOT_MAX_INVENTORY_FILES = 1000;
 
 function redactSnapshotText(text) {
   return text
@@ -34,42 +42,150 @@ function redactSnapshotText(text) {
     .replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|AKIA[A-Z0-9]{12,})\b/g, '<REDACTED>');
 }
 
-export function collectRepositorySnapshot(targetRoot) {
-  const files = [];
-  const excerpts = [];
-  let totalBytes = 0;
+function snapshotPriority(relativePath) {
+  const normalized = relativePath.replace(/\\/g, '/');
+  const name = normalized.split('/').at(-1).toLowerCase();
+  const segments = normalized.toLowerCase().split('/');
+  const extension = SNAPSHOT_SOURCE_EXTENSIONS.test(name);
+  if (SNAPSHOT_MANIFEST_NAMES.has(name)) return 1100;
+  if (SNAPSHOT_ENTRY_NAME.test(name) && segments.length <= 2) return 1200;
+  if (SNAPSHOT_TEST_SEGMENTS.has(segments.at(-2)) || SNAPSHOT_TEST_SEGMENTS.has(name.replace(/\.[^.]+$/, ''))) return extension ? 900 : 650;
+  if (segments.some(segment => SNAPSHOT_FLOW_SEGMENTS.has(segment))) return extension ? 1000 : 760;
+  if (extension) return 800;
+  if (SNAPSHOT_DOC_EXTENSIONS.test(name)) return 150;
+  if (/\.(?:json|toml|yaml|yml|ini|cfg|conf|xml)$/i.test(name)) return 700;
+  return 300;
+}
+
+function collectSnapshotEntries(targetRoot) {
+  const entries = [];
   function visit(directory, relativeDirectory = '') {
-    if (files.length >= SNAPSHOT_MAX_FILES || totalBytes >= SNAPSHOT_MAX_TOTAL_BYTES) return;
     for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-      if (files.length >= SNAPSHOT_MAX_FILES || totalBytes >= SNAPSHOT_MAX_TOTAL_BYTES) break;
       const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
         if (!SNAPSHOT_SKIP_DIRS.has(entry.name)) visit(join(directory, entry.name), relativePath);
         continue;
       }
-      if (!entry.isFile()) continue;
-      files.push(relativePath);
-      if (SNAPSHOT_SKIP_FILES.test(entry.name)) {
-        excerpts.push(`--- ${relativePath} ---\n[content withheld by controller]`);
-        continue;
-      }
-      const size = statSync(join(directory, entry.name)).size;
-      if (size > SNAPSHOT_MAX_FILE_BYTES || totalBytes + size > SNAPSHOT_MAX_TOTAL_BYTES) {
-        excerpts.push(`--- ${relativePath} ---\n[content omitted: size limit]`);
-        continue;
-      }
-      const buffer = readFileSync(join(directory, entry.name));
-      if (buffer.includes(0)) {
-        excerpts.push(`--- ${relativePath} ---\n[binary content omitted]`);
-        continue;
-      }
-      totalBytes += size;
-      excerpts.push(`--- ${relativePath} ---\n${redactSnapshotText(buffer.toString('utf8'))}`);
+      if (entry.isFile()) entries.push({
+        relativePath,
+        absolutePath: join(directory, entry.name),
+        size: statSync(join(directory, entry.name)).size,
+        sensitive: SNAPSHOT_SKIP_FILES.test(entry.name),
+      });
     }
   }
   visit(targetRoot);
-  const truncation = files.length >= SNAPSHOT_MAX_FILES || totalBytes >= SNAPSHOT_MAX_TOTAL_BYTES ? '\n[Snapshot truncated by controller limits.]' : '';
-  return `Files observed by the trusted controller (${files.length}):\n${files.join('\n')}${truncation}\n\nText evidence read by the trusted controller:\n${excerpts.join('\n\n')}`;
+  return entries.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+}
+
+function readSnapshotBuffer(entry) {
+  if (entry.sensitive || entry.size > SNAPSHOT_MAX_FILE_BYTES) return null;
+  const buffer = readFileSync(entry.absolutePath);
+  return buffer.includes(0) ? null : buffer;
+}
+
+function importSpecifiers(text) {
+  const specs = new Set();
+  const patterns = [
+    /\b(?:from|import)\s*['"]([^'"]+)['"]/g,
+    /\bimport\s*\(['"]([^'"]+)['"]\)/g,
+    /\brequire\s*\(['"]([^'"]+)['"]\)/g,
+    /\b(?:include|require)\s*[<(]?['"]([^'"]+)['"]/g,
+  ];
+  for (const pattern of patterns) for (const match of text.matchAll(pattern)) specs.add(match[1]);
+  return specs;
+}
+
+function normalizeSnapshotPath(path) {
+  const parts = [];
+  for (const part of path.replace(/\\/g, '/').split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') parts.pop();
+    else parts.push(part);
+  }
+  return parts.join('/');
+}
+
+function resolveLocalImport(sourcePath, specifier, entriesByPath) {
+  if (!specifier.startsWith('.')) return null;
+  const base = normalizeSnapshotPath(`${sourcePath.split('/').slice(0, -1).join('/')}/${specifier}`);
+  const extensions = ['', '.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.py', '.go', '.rs', '.java', '.kt', '.swift', '.rb', '.php', '.cs'];
+  for (const candidate of [base, ...extensions.slice(1).map(extension => `${base}${extension}`), ...extensions.slice(1).map(extension => `${base}/index${extension}`)]) {
+    if (entriesByPath.has(candidate)) return entriesByPath.get(candidate);
+  }
+  return null;
+}
+
+function prioritizeSnapshotEntries(entries) {
+  const ranked = entries.map(entry => ({ ...entry, priority: snapshotPriority(entry.relativePath) }));
+  const entriesByPath = new Map(ranked.map(entry => [entry.relativePath, entry]));
+  const seeds = [...ranked]
+    .filter(entry => entry.priority >= 900 && !entry.sensitive && entry.size <= SNAPSHOT_MAX_FILE_BYTES)
+    .sort((a, b) => b.priority - a.priority || a.relativePath.localeCompare(b.relativePath))
+    .slice(0, SNAPSHOT_MAX_IMPORT_SCAN_FILES);
+  for (const seed of seeds) {
+    const buffer = readSnapshotBuffer(seed);
+    if (!buffer) continue;
+    for (const specifier of importSpecifiers(buffer.toString('utf8'))) {
+      const imported = resolveLocalImport(seed.relativePath, specifier, entriesByPath);
+      if (imported) imported.priority += 150;
+    }
+  }
+  return ranked.sort((a, b) => b.priority - a.priority || a.relativePath.localeCompare(b.relativePath));
+}
+
+export function collectRepositorySnapshot(targetRoot) {
+  const entries = collectSnapshotEntries(targetRoot);
+  const orderedEntries = prioritizeSnapshotEntries(entries);
+  const excerpts = [];
+  const readPaths = [];
+  const withheldPaths = [];
+  const omittedPaths = [];
+  const binaryPaths = [];
+  let totalBytes = 0;
+  let processedFiles = 0;
+  for (const entry of orderedEntries) {
+    let evidence;
+    if (processedFiles >= SNAPSHOT_MAX_FILES) {
+      omittedPaths.push(entry.relativePath);
+      evidence = '[content omitted: file-count limit]';
+    } else {
+      processedFiles += 1;
+      if (entry.sensitive) {
+        withheldPaths.push(entry.relativePath);
+        evidence = '[content withheld by controller]';
+      } else if (entry.size > SNAPSHOT_MAX_FILE_BYTES || totalBytes + entry.size > SNAPSHOT_MAX_TOTAL_BYTES) {
+        omittedPaths.push(entry.relativePath);
+        evidence = `[content omitted: ${entry.size > SNAPSHOT_MAX_FILE_BYTES ? 'per-file' : 'total'} size limit]`;
+      } else {
+        const buffer = readSnapshotBuffer(entry);
+        if (!buffer) {
+          binaryPaths.push(entry.relativePath);
+          evidence = '[binary content omitted]';
+        } else {
+          totalBytes += entry.size;
+          readPaths.push(entry.relativePath);
+          evidence = redactSnapshotText(buffer.toString('utf8'));
+        }
+      }
+    }
+    excerpts.push(`--- ${entry.relativePath} ---\n${evidence}`);
+  }
+  const inventory = entries.map(entry => entry.relativePath);
+  const inventoryShown = inventory.slice(0, SNAPSHOT_MAX_INVENTORY_FILES);
+  const inventoryNote = inventory.length > inventoryShown.length ? `\n[Inventory truncated: ${inventory.length - inventoryShown.length} paths not listed.]` : '';
+  const formatPaths = paths => paths.length ? paths.join(', ') : 'none';
+  const coverage = [
+    'Coverage summary from the trusted controller:',
+    `Indexed files: ${entries.length}; content read: ${readPaths.length}; content withheld: ${withheldPaths.length}; content omitted: ${omittedPaths.length}; binary omitted: ${binaryPaths.length}.`,
+    `Source bytes read: ${totalBytes}; source budget: ${SNAPSHOT_MAX_TOTAL_BYTES}.`,
+    `Content read in priority order: ${formatPaths(readPaths)}`,
+    `Content withheld: ${formatPaths(withheldPaths)}`,
+    `Content omitted or truncated: ${formatPaths(omittedPaths)}`,
+    `Binary content omitted: ${formatPaths(binaryPaths)}`,
+    'This is bounded evidence, not proof that unlisted or omitted application paths are absent or correct.',
+  ].join('\n');
+  return `Files observed by the trusted controller (${entries.length}):\n${inventoryShown.join('\n')}${inventoryNote}\n\n${coverage}\n\nText evidence read by the trusted controller in priority order:\n${excerpts.join('\n\n')}`;
 }
 
 function codexEnvironment() {
