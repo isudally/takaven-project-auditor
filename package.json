@@ -1,0 +1,10 @@
+{
+  "name": "takaven-project-auditor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "On-demand independent project auditor using Codex CLI and temporary repository clones",
+  "bin": {"takaven-audit": "./src/audit.mjs"},
+  "scripts": {"test": "node --test tests/core.test.mjs && node --test tests/integration.test.mjs && node --test tests/environment.test.mjs && node --test tests/timeout.test.mjs", "audit": "node src/audit.mjs"},
+  "engines": {"node": ">=20"}
+}

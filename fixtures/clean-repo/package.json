@@ -1,0 +1,1 @@
+{"name":"clean-fixture","private":true,"type":"module","scripts":{"start":"node app.mjs","test":"node app.mjs"}}

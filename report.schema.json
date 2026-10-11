@@ -1,0 +1,43 @@
+{
+  "type": "object",
+  "properties": {
+    "project": {"type": "string"},
+    "commit": {"type": "string"},
+    "verdict": {"type": "string", "enum": ["CONTINUE", "MODIFY", "STOP", "INCONCLUSIVE"]},
+    "executive_summary": {"type": "string"},
+    "runtime_status": {"type": "string", "enum": ["PASS", "FAIL", "PARTIAL", "NOT RUN"]},
+    "runtime_evidence": {
+      "type": "array", "items": {
+        "type": "object", "properties": {
+          "check": {"type": "string"},
+          "status": {"type": "string", "enum": ["PASS", "FAIL", "PARTIAL", "NOT RUN"]},
+          "command": {"type": "string"},
+          "observation": {"type": "string"},
+          "negative_control": {"type": "string"}
+        },
+        "required": ["check", "status", "command", "observation", "negative_control"],
+        "additionalProperties": false
+      }
+    },
+    "findings": {
+      "type": "array", "items": {
+        "type": "object", "properties": {
+          "title": {"type": "string"},
+          "severity": {"type": "string", "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]},
+          "evidence_type": {"type": "string", "enum": ["OBSERVED", "INFERRED", "UNKNOWN"]},
+          "evidence": {"type": "string"},
+          "location": {"type": "string"},
+          "recommended_fix": {"type": "string"}
+        },
+        "required": ["title", "severity", "evidence_type", "evidence", "location", "recommended_fix"],
+        "additionalProperties": false
+      }
+    },
+    "reuse_assessment": {"type": "array", "items": {"type": "string"}},
+    "commercial_risks": {"type": "array", "items": {"type": "string"}},
+    "unverified": {"type": "array", "items": {"type": "string"}},
+    "next_actions": {"type": "array", "items": {"type": "string"}}
+  },
+  "required": ["project", "commit", "verdict", "executive_summary", "runtime_status", "runtime_evidence", "findings", "reuse_assessment", "commercial_risks", "unverified", "next_actions"],
+  "additionalProperties": false
+}

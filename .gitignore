@@ -1,0 +1,6 @@
+reports/
+node_modules/
+.env
+.env.*
+.DS_Store
+auditor-*-test-*/
