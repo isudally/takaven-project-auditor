@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs, normalizeGithub, validateGitRef, validateReport, renderMarkdown, promptForRun, applyTrustedMetadata } from '../src/core.mjs';
+import { createEvidenceRegistry, captureEvidence } from '../src/evidence.mjs';
 
 const sample = {project:'demo',commit:'123',verdict:'MODIFY',executive_summary:'Build is broken.',runtime_status:'FAIL',runtime_evidence:[{check:'web boot',status:'FAIL',command:'npm test',observation:'TypeError',negative_control:'not required'}],findings:[{title:'Boot fails',severity:'HIGH',evidence_type:'OBSERVED',evidence:'startup exception',location:'src/app.js:10',recommended_fix:'fix token'}],reuse_assessment:['reuse templates'],commercial_risks:['no buyer evidence'],unverified:['sales'],next_actions:['fix boot']};
 
@@ -27,6 +28,19 @@ test('rejects malformed nested evidence while preserving static findings',()=>{
   assert.throws(()=>validateReport({...sample,runtime_evidence:[{check:'x',status:'FAIL',command:'x',observation:'x'}]}),/negative_control/);
   const staticReport={...sample,runtime_status:'NOT RUN',runtime_evidence:[],findings:[{...sample.findings[0],evidence_type:'OBSERVED'}]};
   assert.equal(validateReport(staticReport,{mode:'inspect'}).findings[0].evidence_type,'OBSERVED');
+});
+test('investigation mode requires controller-owned evidence IDs',()=>{
+  const registry = createEvidenceRegistry({source:'fixture',commit:'abc'});
+  const evidenceId = captureEvidence(registry,{type:'source',location:'src/app.js',content:'throw new Error()'});
+  const report = {...sample, runtime_status:'NOT RUN', runtime_evidence:[], proposed_patch:'--- a/src/app.js\n+++ b/src/app.js\n@@\n-x\n+y', findings:[{...sample.findings[0], evidence_ids:[evidenceId]}]};
+  assert.equal(validateReport(report,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true}).findings[0].evidence_ids[0],evidenceId);
+  assert.throws(()=>validateReport({...report,findings:[{...report.findings[0],evidence_ids:['ev-0000000000000000']}]},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true}),/unknown evidence ID/);
+  assert.throws(()=>validateReport({...report,findings:[{...report.findings[0],evidence_type:'UNKNOWN',evidence_ids:['ev-0000000000000000']}]},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true}),/unknown evidence ID/);
+});
+test('accepts a model patch as data without treating it as controller evidence',()=>{
+  const report = {...sample, proposed_patch:'--- a/src/app.js\n+++ b/src/app.js\n@@\n-x\n+y'};
+  assert.equal(validateReport(report).proposed_patch.includes('src/app.js'),true);
+  assert.match(renderMarkdown(report,{source:'repo',mode:'inspect',timestamp:'now'}),/Proposed patch/);
 });
 test('controller metadata overrides model identity',()=>{
   const result=applyTrustedMetadata(sample,{project:'trusted',commit:'abc123',mode:'inspect',source:'repo',auditedAt:'2026-10-11T00:00:00.000Z'});

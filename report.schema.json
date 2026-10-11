@@ -13,9 +13,10 @@
           "status": {"type": "string", "enum": ["PASS", "FAIL", "PARTIAL", "NOT RUN"]},
           "command": {"type": "string"},
           "observation": {"type": "string"},
-          "negative_control": {"type": "string"}
+          "negative_control": {"type": "string"},
+          "evidence_ids": {"type": ["array", "null"], "items": {"type": "string", "pattern": "^ev-[a-f0-9]{16}$"}, "minItems": 1}
         },
-        "required": ["check", "status", "command", "observation", "negative_control"],
+        "required": ["check", "status", "command", "observation", "negative_control", "evidence_ids"],
         "additionalProperties": false
       }
     },
@@ -27,17 +28,19 @@
           "evidence_type": {"type": "string", "enum": ["OBSERVED", "INFERRED", "UNKNOWN"]},
           "evidence": {"type": "string"},
           "location": {"type": "string"},
-          "recommended_fix": {"type": "string"}
+          "recommended_fix": {"type": "string"},
+          "evidence_ids": {"type": ["array", "null"], "items": {"type": "string", "pattern": "^ev-[a-f0-9]{16}$"}, "minItems": 1}
         },
-        "required": ["title", "severity", "evidence_type", "evidence", "location", "recommended_fix"],
+        "required": ["title", "severity", "evidence_type", "evidence", "location", "recommended_fix", "evidence_ids"],
         "additionalProperties": false
       }
     },
     "reuse_assessment": {"type": "array", "items": {"type": "string"}},
     "commercial_risks": {"type": "array", "items": {"type": "string"}},
     "unverified": {"type": "array", "items": {"type": "string"}},
-    "next_actions": {"type": "array", "items": {"type": "string"}}
+    "next_actions": {"type": "array", "items": {"type": "string"}},
+    "proposed_patch": {"type": ["string", "null"]}
   },
-  "required": ["project", "commit", "verdict", "executive_summary", "runtime_status", "runtime_evidence", "findings", "reuse_assessment", "commercial_risks", "unverified", "next_actions"],
+  "required": ["project", "commit", "verdict", "executive_summary", "runtime_status", "runtime_evidence", "findings", "reuse_assessment", "commercial_risks", "unverified", "next_actions", "proposed_patch"],
   "additionalProperties": false
 }

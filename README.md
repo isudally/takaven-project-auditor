@@ -9,10 +9,11 @@
 - Codex CLI as the reasoning/execution engine (no custom model or paid agent service).
 - `inspect` (safe static review) and opt-in `verify` (tests/builds in a Codex sandbox).
 - Explicit evidence vs inference classification, negative controls where feasible, and NOT RUN/UNKNOWN outcomes.
+- Optional bounded investigative mode (`--investigate`) in which Codex may request additional source or imported evidence through a controller-validated registry.
 - Machine-readable `report.json` and readable `report.md`.
 - Ready-made hostile-documentation and clean-control fixtures for evaluation.
 
-**Status:** The bounded static-audit path is implemented and has been exercised against clean, hostile and real-project snapshots. Inspect mode reads controller-selected source evidence, validates model reports, records coverage and keeps runtime status `NOT RUN`. Runtime verification is not implemented as a secure execution capability yet; `verify` remains an opt-in orchestration path whose command execution depends on external isolation and policy controls.
+**Status:** The bounded static-audit path and the controller-mediated evidence-request loop are implemented and tested against clean, hostile and real-project snapshots. Inspect mode reads controller-selected source evidence, validates coverage and evidence IDs, and keeps runtime status `NOT RUN`. The investigative loop can retrieve bounded source and previously captured runtime evidence; it records pre-approved experiments as `NOT AVAILABLE` when no runner is configured. It does not yet provide a complete secure patch-application or runtime-experiment capability.
 
 ### Work package 1 status
 
@@ -32,6 +33,9 @@ codex login
 
 # Static audit; does NOT run target project's own code
 node src/audit.mjs --repo https://github.com/isudally/playkin --mode inspect --out ./reports/playkin
+
+# Bounded investigation using controller-mediated source/evidence requests
+node src/audit.mjs --repo https://github.com/isudally/playkin --mode inspect --investigate --evidence ./controller-evidence.json --out ./reports/playkin-investigation
 
 # Deeper audit, when you trust the repository and run on an isolated computer
 node src/audit.mjs --repo https://github.com/isudally/playkin --mode verify --out ./reports/playkin-verified

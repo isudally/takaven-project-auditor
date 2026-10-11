@@ -61,8 +61,26 @@ function reportGuardScenario(){
   }finally{rmSync(tmp,{recursive:true,force:true});}
 }
 
+function investigationScenario(){
+  const tmp=makeTemp('auditor-investigation-test');
+  try{
+    const source=initFixture(tmp);
+    const out=join(tmp,'report');
+    const result=run(process.execPath,[join(project,'src','audit.mjs'),'--path',source,'--mode','verify','--investigate','--out',out],{env:{...process.env,TAKAVEN_CODEX_BIN:join(project,'tests','fake-investigator.mjs'),TAKAVEN_SCRATCH_ROOT:join(tmp,'scratch')}});
+    assert.equal(result.status,0,result.stderr);
+    const report=JSON.parse(readFileSync(join(out,'report.json'),'utf8'));
+    assert.equal(report.findings[0].evidence_ids.length,1);
+    assert.equal(report.coverage.follow_up_read_files.includes('app.mjs'),true);
+    assert.equal(report.coverage.bytes_examined > report.coverage.initial_bytes_examined,true);
+    const evidence=JSON.parse(readFileSync(join(out,'evidence-registry.json'),'utf8'));
+    assert.equal(evidence.investigation.length >= 1,true);
+    assert.equal(evidence.registry.records.some(record=>record.type==='source' && record.action==='source_read'),true);
+  } finally {rmSync(tmp,{recursive:true,force:true});}
+}
+
 test('controller integration scenarios', { concurrency: false }, () => {
   fullFlowScenario();
   dirtyWorkingTreeScenario();
   reportGuardScenario();
+  investigationScenario();
 });
