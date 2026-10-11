@@ -36,5 +36,6 @@ test('prompt includes controller snapshot as untrusted source evidence',()=>{
   assert.match(prompt,/secret=<REDACTED>/);
   assert.match(prompt,/use this snapshot instead of shell commands/);
   assert.match(prompt,/Do not turn a title, README aspiration/);
+  assert.match(prompt,/runtime_evidence must be empty or every entry must have status NOT RUN/);
 });
 test('verify prompt confines work to disposable clone',()=>assert.match(promptForRun({projectName:'x',commit:'abc',mode:'verify',contract:'RULES',mission:'TASK'}),/DISPOSABLE CLONE ONLY/));
