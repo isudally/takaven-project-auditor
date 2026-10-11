@@ -177,3 +177,170 @@ jobs:
           path: runtime-proof/
           if-no-files-found: error
           retention-days: 14
+
+  playkin-browser:
+    name: Browser smoke test approved Playkin revision
+    needs: fixtures
+    if: success()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the auditor
+        uses: actions/checkout@v4
+
+      - name: Check out the approved Playkin revision
+        uses: actions/checkout@v4
+        with:
+          repository: isudally/playkin
+          ref: acb4e893b56fb5f6156889b9dab4ec1aacf32e27
+          path: playkin
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Playkin dependencies without lifecycle scripts
+        working-directory: playkin
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Build Playkin web bundle
+        working-directory: playkin
+        env:
+          CI: true
+        run: npm run build:web
+
+      - name: Install pinned Playwright runner
+        run: |
+          mkdir -p .playwright-runner
+          cd .playwright-runner
+          npm init -y >/dev/null 2>&1
+          npm install --ignore-scripts --no-package-lock --no-audit --no-fund playwright@1.52.0
+          npx playwright install --with-deps chromium
+
+      - name: Serve and smoke-test Playkin
+        shell: bash
+        run: |
+          mkdir -p runtime-proof/playkin
+          python3 -m http.server 4173 --bind 127.0.0.1 --directory playkin/web-build > runtime-proof/playkin/server.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent --show-error http://127.0.0.1:4173/ >/dev/null; then break; fi
+            sleep 1
+          done
+          node --input-type=module <<'NODE'
+          import { mkdirSync, writeFileSync } from 'node:fs';
+          import { chromium } from './.playwright-runner/node_modules/playwright/index.mjs';
+
+          mkdirSync('runtime-proof/playkin', { recursive: true });
+          const startedAt = new Date().toISOString();
+          const start = process.hrtime.bigint();
+          const consoleErrors = [];
+          const pageErrors = [];
+          const browser = await chromium.launch({ headless: true });
+          const page = await browser.newPage();
+          page.on('console', message => {
+            if (message.type() === 'error') consoleErrors.push(message.text());
+          });
+          page.on('pageerror', error => pageErrors.push(String(error)));
+          let response;
+          let navigationError = null;
+          try {
+            response = await page.goto('http://127.0.0.1:4173/', { waitUntil: 'networkidle', timeout: 60000 });
+            await page.screenshot({ path: 'runtime-proof/playkin/playkin.png', fullPage: true });
+          } catch (error) {
+            navigationError = String(error);
+          }
+          const result = {
+            repository: 'isudally/playkin',
+            commit: 'acb4e893b56fb5f6156889b9dab4ec1aacf32e27',
+            command: 'npm ci --ignore-scripts && npm run build:web && Chromium GET /',
+            started_at: startedAt,
+            finished_at: new Date().toISOString(),
+            duration_ms: Math.round(Number(process.hrtime.bigint() - start) / 1e4) / 100,
+            http_status: response?.status() ?? null,
+            http_ok: response?.ok() ?? false,
+            console_errors: consoleErrors,
+            page_errors: pageErrors,
+            navigation_error: navigationError,
+            screenshot: 'runtime-proof/playkin/playkin.png',
+            browser: 'Chromium 1.52.0',
+          };
+          await browser.close();
+          writeFileSync('runtime-proof/playkin/smoke.json', JSON.stringify(result, null, 2) + '\n');
+          NODE
+
+      - name: Interpret browser evidence with TAKAVEN report controls
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import { applyTrustedMetadata, renderMarkdown, validateReport } from './src/core.mjs';
+
+          const evidence = JSON.parse(readFileSync('runtime-proof/playkin/smoke.json', 'utf8'));
+          const failed = !evidence.http_ok || evidence.page_errors.length > 0 || evidence.navigation_error;
+          const report = validateReport({
+            project: 'playkin',
+            commit: 'controller-owned-placeholder',
+            verdict: failed ? 'MODIFY' : 'CONTINUE',
+            executive_summary: failed
+              ? 'The approved Playkin revision produced a browser/runtime error during the credential-free smoke test.'
+              : 'The approved Playkin revision loaded at the smoke-test entry point without captured browser errors; broader behavior remains unverified.',
+            runtime_status: failed ? 'FAIL' : 'PASS',
+            runtime_evidence: [{
+              check: 'Playkin web smoke test',
+              status: failed ? 'FAIL' : 'PASS',
+              command: evidence.command,
+              observation: JSON.stringify(evidence),
+              negative_control: 'The fixture job completed before this approved pinned-revision test.',
+            }],
+            findings: failed ? [{
+              title: 'Playkin smoke test produced a browser/runtime error',
+              severity: 'HIGH',
+              evidence_type: 'OBSERVED',
+              evidence: JSON.stringify(evidence),
+              location: 'Playkin web smoke-test entry point',
+              recommended_fix: 'Reproduce the captured browser error against the pinned revision before accepting runtime readiness.',
+            }] : [],
+            reuse_assessment: [],
+            commercial_risks: [],
+            unverified: [
+              'This proof covers only the web entry point; mobile flows and authenticated/provider-backed features were not run.',
+            ],
+            next_actions: failed
+              ? ['Review the captured screenshot and browser error before changing the target repository.']
+              : ['Run targeted browser flows only after defining credential-free test data and expected behavior.'],
+          }, { mode: 'verify' });
+          const trusted = applyTrustedMetadata(report, {
+            project: 'playkin',
+            commit: evidence.commit,
+            mode: 'verify',
+            source: 'github-actions://runtime-proof/playkin',
+            auditedAt: new Date().toISOString(),
+            coverage: {
+              authority: 'github-actions-controller',
+              evidence_file: 'runtime-proof/playkin/smoke.json',
+              screenshot_file: 'runtime-proof/playkin/playkin.png',
+            },
+          });
+          writeFileSync('runtime-proof/playkin/report.json', JSON.stringify(trusted, null, 2) + '\n');
+          writeFileSync('runtime-proof/playkin/report.md', renderMarkdown(trusted, {
+            source: 'github-actions://runtime-proof/playkin',
+            mode: 'verify',
+            timestamp: trusted.audited_at,
+          }));
+          NODE
+
+      - name: Upload Playkin evidence and report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: takaven-playkin-runtime-proof-${{ github.run_id }}
+          path: runtime-proof/playkin/
+          if-no-files-found: error
+          retention-days: 14
