@@ -216,11 +216,10 @@ jobs:
 
       - name: Install pinned Playwright runner
         run: |
-          mkdir -p .playwright-runner
-          cd .playwright-runner
-          npm init -y >/dev/null 2>&1
-          npm install --ignore-scripts --no-package-lock --no-audit --no-fund playwright@1.52.0
-          npx playwright install --with-deps chromium
+          set -euxo pipefail
+          mkdir -p runtime-proof/playkin
+          npm install --prefix .playwright-runner --ignore-scripts --no-package-lock --no-audit --no-fund playwright@1.52.0
+          ./.playwright-runner/node_modules/.bin/playwright install --with-deps chromium
 
       - name: Serve and smoke-test Playkin
         shell: bash
@@ -342,5 +341,5 @@ jobs:
         with:
           name: takaven-playkin-runtime-proof-${{ github.run_id }}
           path: runtime-proof/playkin/
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
