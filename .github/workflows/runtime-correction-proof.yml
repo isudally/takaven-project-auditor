@@ -1,0 +1,328 @@
+name: Playkin exact V3 correction proof
+
+on:
+  # One review-branch proof only. No pull_request_target, scheduled or production trigger.
+  pull_request:
+    types: [opened, reopened, synchronize]
+    paths:
+      - '.github/workflows/runtime-correction-proof.yml'
+      - 'proofs/playkin-correction/generated.patch'
+  workflow_dispatch:
+    inputs:
+      patch_base64:
+        description: Base64 of the exact V3-generated unified diff
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  PLAYKIN_COMMIT: acb4e893b56fb5f6156889b9dab4ec1aacf32e27
+
+jobs:
+  correction-proof:
+    if: >-
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       github.head_ref == 'proof/playkin-correction-95ac1d9') ||
+      (github.event_name == 'workflow_dispatch' &&
+       github.ref == 'refs/heads/proof/playkin-correction-95ac1d9')
+    name: Verify exact V3 Playkin correction
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out auditor controller
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check out pinned Playkin revision
+        uses: actions/checkout@v4
+        with:
+          repository: isudally/playkin
+          ref: acb4e893b56fb5f6156889b9dab4ec1aacf32e27
+          path: playkin
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run healthy control
+        shell: bash
+        run: |
+          set +e
+          mkdir -p runtime-proof
+          npm test --prefix fixtures/clean-repo > runtime-proof/healthy-control.log 2>&1
+          status=$?
+          set -e
+          printf '{"fixture":"clean","exit_code":%s,"expected_exit_code":0}\n' "$status" > runtime-proof/healthy-control.json
+          test "$status" -eq 0
+
+      - name: Install Playkin dependencies without lifecycle scripts
+        working-directory: playkin
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Install pinned Playwright runner
+        run: |
+          set -euxo pipefail
+          mkdir -p runtime-proof
+          npm install --prefix .playwright-runner --ignore-scripts --no-package-lock --no-audit --no-fund playwright@1.52.0
+          ./.playwright-runner/node_modules/.bin/playwright install --with-deps chromium
+
+      - name: Build baseline
+        working-directory: playkin
+        shell: bash
+        run: |
+          set +e
+          npm run build:web > ../runtime-proof/baseline-build.log 2>&1
+          status=$?
+          set -e
+          printf '{"commit":"%s","exit_code":%s}\n' "$PLAYKIN_COMMIT" "$status" > ../runtime-proof/baseline-build.json
+          test "$status" -eq 0
+
+      - name: Capture baseline browser evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p runtime-proof/baseline
+          python3 -m http.server 4173 --bind 127.0.0.1 --directory playkin/web-build > runtime-proof/baseline/server.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          server_ready=false
+          for attempt in {1..30}; do
+            if curl --fail --silent --show-error http://127.0.0.1:4173/ >/dev/null; then server_ready=true; break; fi
+            sleep 1
+          done
+          export SMOKE_NAME=baseline
+          export SERVER_READY=$server_ready
+          node --input-type=module <<'NODE'
+          import { mkdirSync, writeFileSync } from 'node:fs';
+          import { chromium } from './.playwright-runner/node_modules/playwright/index.mjs';
+
+          mkdirSync('runtime-proof/baseline', { recursive: true });
+          const startedAt = new Date().toISOString();
+          const start = process.hrtime.bigint();
+          const consoleErrors = [];
+          const pageErrors = [];
+          const failedRequests = [];
+          const browser = await chromium.launch({ headless: true });
+          const context = await browser.newContext();
+          await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
+          const page = await context.newPage();
+          page.on('console', message => { if (message.type() === 'error') consoleErrors.push({ text: message.text(), location: message.location() }); });
+          page.on('pageerror', error => pageErrors.push({ message: error.message, stack: error.stack ?? null }));
+          page.on('requestfailed', request => failedRequests.push({ url: request.url(), failure: request.failure() }));
+          let response = null;
+          let navigationError = null;
+          let bodyText = '';
+          let interactiveCount = 0;
+          let rootText = '';
+          try {
+            response = await page.goto('http://127.0.0.1:4173/', { waitUntil: 'networkidle', timeout: 60000 });
+            bodyText = await page.locator('body').innerText();
+            rootText = await page.locator('#root').innerText();
+            interactiveCount = await page.locator('button, a, input, [role="button"]').count();
+            await page.screenshot({ path: 'runtime-proof/baseline/screenshot.png', fullPage: true });
+          } catch (error) { navigationError = String(error); }
+          await context.tracing.stop({ path: 'runtime-proof/baseline/trace.zip' });
+          const result = {
+            phase: 'baseline', repository: 'isudally/playkin', commit: process.env.PLAYKIN_COMMIT,
+            started_at: startedAt, finished_at: new Date().toISOString(),
+            duration_ms: Math.round(Number(process.hrtime.bigint() - start) / 1e4) / 100,
+            server_ready: process.env.SERVER_READY === 'true', http_status: response?.status() ?? null, http_ok: response?.ok() ?? false,
+            console_errors: consoleErrors, page_errors: pageErrors, failed_requests: failedRequests, navigation_error: navigationError,
+            browser: { name: 'Chromium', version: browser.version() }, node: process.versions.node,
+            positive_ui_check: { body_text_length: bodyText.length, root_text_length: rootText.length, text_excerpt: rootText.slice(0,1000), interactive_count: interactiveCount, passed: /Welcome to GameForge/i.test(rootText) && rootText.trim().length > 20 && interactiveCount > 0 },
+            screenshot: 'runtime-proof/baseline/screenshot.png', trace: 'runtime-proof/baseline/trace.zip',
+          };
+          await browser.close();
+          writeFileSync('runtime-proof/baseline/smoke.json', JSON.stringify(result, null, 2) + '\n');
+          console.log(JSON.stringify(result, null, 2));
+          NODE
+          sha256sum runtime-proof/baseline/screenshot.png runtime-proof/baseline/trace.zip > runtime-proof/baseline/artifact-hashes.txt
+
+      - name: Validate and apply exact V3 patch
+        shell: bash
+        env:
+          PATCH_BASE64: ${{ inputs.patch_base64 }}
+        run: |
+          set -euo pipefail
+          mkdir -p runtime-proof/patch
+          if [ -n "$PATCH_BASE64" ]; then
+            printf '%s' "$PATCH_BASE64" | base64 --decode > runtime-proof/patch/v3.patch
+          else
+            cp proofs/playkin-correction/generated.patch runtime-proof/patch/v3.patch
+          fi
+          echo '95ac1d94d97f3991f84ba564a9ad8da8274b83935a95cddf75106ee9d6c46946  runtime-proof/patch/v3.patch' | sha256sum --check
+          test "$(git -C playkin rev-parse HEAD)" = "$PLAYKIN_COMMIT"
+          git -C playkin diff --exit-code
+          git -C playkin apply --check --index "$GITHUB_WORKSPACE/runtime-proof/patch/v3.patch"
+          git -C playkin apply --index "$GITHUB_WORKSPACE/runtime-proof/patch/v3.patch"
+          git -C playkin diff --cached --check
+          git -C playkin diff --cached --name-only > runtime-proof/patch/paths.txt
+          printf '%s\n' src/components/EmojiPicker.tsx src/components/StyleCarousel.tsx > runtime-proof/patch/expected-paths.txt
+          diff -u runtime-proof/patch/expected-paths.txt runtime-proof/patch/paths.txt
+          sha256sum runtime-proof/patch/v3.patch > runtime-proof/patch/v3.patch.sha256
+          git -C playkin diff --cached > runtime-proof/patch/applied.diff
+          sha256sum runtime-proof/patch/applied.diff > runtime-proof/patch/applied.diff.sha256
+          git -C playkin rev-parse HEAD > runtime-proof/patch/source-commit.txt
+          test "$(cat runtime-proof/patch/source-commit.txt)" = "$PLAYKIN_COMMIT"
+
+      - name: Build corrected checkout
+        working-directory: playkin
+        shell: bash
+        run: |
+          set +e
+          npm run build:web > ../runtime-proof/patched-build.log 2>&1
+          status=$?
+          set -e
+          printf '{"commit":"%s","exit_code":%s}\n' "$PLAYKIN_COMMIT" "$status" > ../runtime-proof/patched-build.json
+          test "$status" -eq 0
+
+      - name: Capture corrected browser evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p runtime-proof/patched
+          python3 -m http.server 4174 --bind 127.0.0.1 --directory playkin/web-build > runtime-proof/patched/server.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          server_ready=false
+          for attempt in {1..30}; do
+            if curl --fail --silent --show-error http://127.0.0.1:4174/ >/dev/null; then server_ready=true; break; fi
+            sleep 1
+          done
+          export SMOKE_NAME=patched
+          export SERVER_READY=$server_ready
+          node --input-type=module <<'NODE'
+          import { mkdirSync, writeFileSync } from 'node:fs';
+          import { chromium } from './.playwright-runner/node_modules/playwright/index.mjs';
+
+          mkdirSync('runtime-proof/patched', { recursive: true });
+          const startedAt = new Date().toISOString();
+          const start = process.hrtime.bigint();
+          const consoleErrors = [];
+          const pageErrors = [];
+          const failedRequests = [];
+          const browser = await chromium.launch({ headless: true });
+          const context = await browser.newContext();
+          await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
+          const page = await context.newPage();
+          page.on('console', message => { if (message.type() === 'error') consoleErrors.push({ text: message.text(), location: message.location() }); });
+          page.on('pageerror', error => pageErrors.push({ message: error.message, stack: error.stack ?? null }));
+          page.on('requestfailed', request => failedRequests.push({ url: request.url(), failure: request.failure() }));
+          let response = null;
+          let navigationError = null;
+          let bodyText = '';
+          let interactiveCount = 0;
+          let rootText = '';
+          try {
+            response = await page.goto('http://127.0.0.1:4174/', { waitUntil: 'networkidle', timeout: 60000 });
+            bodyText = await page.locator('body').innerText();
+            rootText = await page.locator('#root').innerText();
+            interactiveCount = await page.locator('button, a, input, [role="button"]').count();
+            await page.screenshot({ path: 'runtime-proof/patched/screenshot.png', fullPage: true });
+          } catch (error) { navigationError = String(error); }
+          await context.tracing.stop({ path: 'runtime-proof/patched/trace.zip' });
+          const result = {
+            phase: 'patched', repository: 'isudally/playkin', commit: process.env.PLAYKIN_COMMIT,
+            started_at: startedAt, finished_at: new Date().toISOString(),
+            duration_ms: Math.round(Number(process.hrtime.bigint() - start) / 1e4) / 100,
+            server_ready: process.env.SERVER_READY === 'true', http_status: response?.status() ?? null, http_ok: response?.ok() ?? false,
+            console_errors: consoleErrors, page_errors: pageErrors, failed_requests: failedRequests, navigation_error: navigationError,
+            browser: { name: 'Chromium', version: browser.version() }, node: process.versions.node,
+            positive_ui_check: { body_text_length: bodyText.length, root_text_length: rootText.length, text_excerpt: rootText.slice(0,1000), interactive_count: interactiveCount, passed: /Welcome to GameForge/i.test(rootText) && rootText.trim().length > 20 && interactiveCount > 0 },
+            screenshot: 'runtime-proof/patched/screenshot.png', trace: 'runtime-proof/patched/trace.zip',
+          };
+          await browser.close();
+          writeFileSync('runtime-proof/patched/smoke.json', JSON.stringify(result, null, 2) + '\n');
+          console.log(JSON.stringify(result, null, 2));
+          NODE
+          sha256sum runtime-proof/patched/screenshot.png runtime-proof/patched/trace.zip > runtime-proof/patched/artifact-hashes.txt
+
+      - name: Record independent before-and-after result
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p runtime-proof
+          node --input-type=module <<'NODE'
+          import { existsSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
+          import { createHash } from 'node:crypto';
+          import { join, relative } from 'node:path';
+          const readJSON = path => {
+            if (!existsSync(path)) return null;
+            try { return JSON.parse(readFileSync(path, 'utf8')); }
+            catch { return null; }
+          };
+          const healthy = readJSON('runtime-proof/healthy-control.json');
+          const baselineBuild = readJSON('runtime-proof/baseline-build.json');
+          const patchedBuild = readJSON('runtime-proof/patched-build.json');
+          const baseline = readJSON('runtime-proof/baseline/smoke.json');
+          const patched = readJSON('runtime-proof/patched/smoke.json');
+          const patchPath = 'runtime-proof/patch/v3.patch';
+          const patchHash = existsSync(patchPath) ? createHash('sha256').update(readFileSync(patchPath)).digest('hex') : null;
+          const correctPatch = patchHash === '95ac1d94d97f3991f84ba564a9ad8da8274b83935a95cddf75106ee9d6c46946';
+          const validPage = x => Boolean(x && x.server_ready && x.http_ok && !x.navigation_error);
+          const baselineReproduced = Boolean(validPage(baseline) && baseline.page_errors.some(e => /Cannot read properties of undefined/.test(e.message)));
+          const corrected = Boolean(validPage(patched) && patched.page_errors.length === 0 && patched.positive_ui_check.passed);
+          const healthyControlPassed = healthy?.exit_code === 0;
+          const baselineBuilt = baselineBuild?.exit_code === 0;
+          const patchedBuilt = patchedBuild?.exit_code === 0;
+          const hasPatchedAttempt = patchedBuild !== null;
+          const completeHarness = healthyControlPassed && baselineBuilt && baselineReproduced && correctPatch;
+          const verdict = !completeHarness || !hasPatchedAttempt ? 'BLOCKED'
+            : !patchedBuilt ? 'FAIL'
+            : !validPage(patched) ? 'BLOCKED'
+            : corrected ? 'PASS' : 'FAIL';
+          const result = {
+            verdict,
+            scope: 'Exact supplied patch against pinned Playkin browser startup; not a new AI investigation',
+            repository: 'isudally/playkin', source_commit: process.env.PLAYKIN_COMMIT,
+            auditor_workflow_commit: process.env.GITHUB_SHA,
+            run_id: process.env.GITHUB_RUN_ID,
+            patch_sha256: patchHash,
+            exact_patch_preserved: correctPatch,
+            healthy_control_passed: healthyControlPassed,
+            baseline_build_passed: baselineBuilt,
+            baseline_failure_reproduced: baselineReproduced,
+            patched_build_passed: patchedBuilt,
+            corrected_entry_point_verified: corrected,
+            baseline, patched,
+            v3_report_validation: 'NOT RUN: src/evidence.mjs and the V3 validator are not present in the published baseline; these are raw controller-captured proof artifacts, not a substitute V3 report.',
+            original_repository_modified: false,
+            recorded_at: new Date().toISOString(),
+          };
+          writeFileSync('runtime-proof/final-result.json', JSON.stringify(result, null, 2) + '\n');
+          const files=[];
+          const collect=dir=>{for(const e of readdirSync(dir,{withFileTypes:true})){
+            const p=join(dir,e.name);
+            if(e.isDirectory()) collect(p);
+            else if(e.isFile()){
+              const b=readFileSync(p);
+              files.push({path:relative('runtime-proof',p),bytes:b.length,sha256:createHash('sha256').update(b).digest('hex')});
+            }
+          }};
+          collect('runtime-proof');
+          writeFileSync('runtime-proof/artifact-manifest.json',JSON.stringify({source_commit:process.env.PLAYKIN_COMMIT,run_id:process.env.GITHUB_RUN_ID,files},null,2)+'\n');
+          console.log(JSON.stringify(result,null,2));
+          if(verdict!=='PASS') process.exitCode=1;
+          NODE
+
+      - name: Upload correction evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: takaven-playkin-correction-proof-${{ github.run_id }}
+          path: runtime-proof/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Remove disposable target
+        if: always()
+        shell: bash
+        run: rm -rf -- playkin .playwright-runner

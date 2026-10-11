@@ -1,0 +1,62 @@
+diff --git a/src/components/EmojiPicker.tsx b/src/components/EmojiPicker.tsx
+index f96a4ee..db7e053 100644
+--- a/src/components/EmojiPicker.tsx
++++ b/src/components/EmojiPicker.tsx
+@@ -266,7 +266,7 @@ const styles = StyleSheet.create({
+     flex: 1,
+     marginLeft: spacing.sm,
+     fontSize: typography.size.md,
+-    fontFamily: typography.fontFamily.regular,
++    fontWeight: typography.weight.regular,
+   },
+   categoryContainer: {
+     marginBottom: spacing.md,
+@@ -285,14 +285,14 @@ const styles = StyleSheet.create({
+   categoryLabel: {
+     marginLeft: spacing.xs,
+     fontSize: typography.size.sm,
+-    fontFamily: typography.fontFamily.medium,
++    fontWeight: typography.weight.medium,
+   },
+   recentSection: {
+     marginBottom: spacing.md,
+   },
+   sectionTitle: {
+     fontSize: typography.size.sm,
+-    fontFamily: typography.fontFamily.medium,
++    fontWeight: typography.weight.medium,
+     marginBottom: spacing.sm,
+   },
+   scrollView: {
+diff --git a/src/components/StyleCarousel.tsx b/src/components/StyleCarousel.tsx
+index 6ee003b..4ead82d 100644
+--- a/src/components/StyleCarousel.tsx
++++ b/src/components/StyleCarousel.tsx
+@@ -361,8 +361,7 @@ const styles_local = StyleSheet.create({
+   },
+   styleName: {
+     fontSize: typography.size.xl,
+-    fontFamily: typography.fontFamily.bold,
+-    fontWeight: 'bold',
++    fontWeight: typography.weight.bold,
+     color: '#fff',
+     textAlign: 'center',
+     marginBottom: spacing.sm,
+@@ -372,7 +371,7 @@ const styles_local = StyleSheet.create({
+   },
+   styleDescription: {
+     fontSize: typography.size.sm,
+-    fontFamily: typography.fontFamily.regular,
++    fontWeight: typography.weight.regular,
+     color: '#fff',
+     textAlign: 'center',
+     opacity: 0.9,
+@@ -397,7 +396,7 @@ const styles_local = StyleSheet.create({
+   },
+   tagText: {
+     fontSize: typography.size.xs,
+-    fontFamily: typography.fontFamily.medium,
++    fontWeight: typography.weight.medium,
+     color: '#fff',
+   },
+   colorPalette: {
