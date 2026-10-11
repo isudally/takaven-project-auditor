@@ -1,0 +1,179 @@
+name: Runtime proof
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fixtures:
+    name: Execute trusted fixtures and record evidence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the pinned auditor revision
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Execute healthy and broken fixtures
+        shell: bash
+        run: |
+          mkdir -p runtime-proof/evidence
+          node --input-type=module <<'NODE'
+          import { mkdirSync, writeFileSync } from 'node:fs';
+          import { hrtime, platform, versions } from 'node:process';
+          import { spawnSync } from 'node:child_process';
+
+          const cases = [
+            { name: 'clean', path: 'fixtures/clean-repo', expectedExitCode: 0 },
+            { name: 'hostile', path: 'fixtures/hostile-repo', expectedExitCode: 1 },
+          ];
+
+          mkdirSync('runtime-proof/evidence', { recursive: true });
+          const evidence = cases.map(({ name, path, expectedExitCode }) => {
+            const command = 'npm test --prefix ' + path;
+            const startedAt = new Date().toISOString();
+            const start = hrtime.bigint();
+            const result = spawnSync('npm', ['test', '--prefix', path], {
+              cwd: process.cwd(),
+              encoding: 'utf8',
+              shell: false,
+              timeout: 120000,
+              env: { ...process.env, CI: 'true' },
+            });
+            const durationMs = Number(hrtime.bigint() - start) / 1e6;
+            const exitCode = result.error?.code === 'ETIMEDOUT'
+              ? 124
+              : (result.status ?? 1);
+            const record = {
+              fixture: name,
+              command,
+              cwd: process.cwd(),
+              started_at: startedAt,
+              finished_at: new Date().toISOString(),
+              duration_ms: Math.round(durationMs * 100) / 100,
+              exit_code: exitCode,
+              expected_exit_code: expectedExitCode,
+              stdout: result.stdout ?? '',
+              stderr: result.stderr ?? '',
+              runner: {
+                os: platform,
+                node: versions.node,
+              },
+            };
+            writeFileSync(
+              `runtime-proof/evidence/${name}.json`,
+              JSON.stringify(record, null, 2) + '\n',
+              { mode: 0o600 },
+            );
+            return record;
+          });
+
+          writeFileSync(
+            'runtime-proof/evidence/summary.json',
+            JSON.stringify({
+              controller: 'github-actions-runner',
+              github_sha: process.env.GITHUB_SHA,
+              captured_at: new Date().toISOString(),
+              evidence,
+            }, null, 2) + '\n',
+            { mode: 0o600 },
+          );
+
+          const unexpected = evidence.filter(({ exit_code, expected_exit_code }) => exit_code !== expected_exit_code);
+          if (unexpected.length > 0) {
+            console.error('Unexpected fixture result:', JSON.stringify(unexpected));
+            process.exitCode = 1;
+          }
+          NODE
+
+      - name: Interpret captured evidence with TAKAVEN report controls
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+          import { applyTrustedMetadata, renderMarkdown, validateReport } from './src/core.mjs';
+
+          const summary = JSON.parse(readFileSync('runtime-proof/evidence/summary.json', 'utf8'));
+          mkdirSync('runtime-proof/reports', { recursive: true });
+
+          for (const evidence of summary.evidence) {
+            const passed = evidence.exit_code === evidence.expected_exit_code;
+            const healthy = evidence.fixture === 'clean';
+            const runtimePassed = evidence.exit_code === 0;
+            const observation = [
+              `controller-captured exit_code=${evidence.exit_code}`,
+              `duration_ms=${evidence.duration_ms}`,
+              `stdout=${JSON.stringify(evidence.stdout)}`,
+              `stderr=${JSON.stringify(evidence.stderr)}`,
+            ].join('; ');
+            const report = validateReport({
+              project: `${evidence.fixture}-fixture`,
+              commit: 'controller-owned-placeholder',
+              verdict: runtimePassed ? 'CONTINUE' : 'MODIFY',
+              executive_summary: runtimePassed
+                ? 'The healthy fixture completed its declared test command successfully.'
+                : 'The broken fixture failed its declared test command; the captured failure is a reproducible runtime defect.',
+              runtime_status: runtimePassed ? 'PASS' : 'FAIL',
+              runtime_evidence: [{
+                check: `npm test for ${evidence.fixture} fixture`,
+                status: runtimePassed ? 'PASS' : 'FAIL',
+                command: evidence.command,
+                observation,
+                negative_control: healthy
+                  ? 'The separate hostile fixture must fail; its result is recorded independently.'
+                  : 'The separate healthy fixture must pass; its result is recorded independently.',
+              }],
+              findings: runtimePassed ? [] : [{
+                title: 'Fixture test command fails at runtime',
+                severity: 'HIGH',
+                evidence_type: 'OBSERVED',
+                evidence: observation,
+                location: 'fixtures/hostile-repo/app.mjs',
+                recommended_fix: 'Correct the missing typography property before treating startup as successful.',
+              }],
+              reuse_assessment: [],
+              commercial_risks: [],
+              unverified: [
+                'Playkin browser verification was not run by this fixture-only proof.',
+              ],
+              next_actions: runtimePassed
+                ? ['Retain the independently captured PASS evidence.']
+                : ['Fix the startup exception and rerun the captured verification.'],
+            }, { mode: 'verify' });
+
+            const trusted = applyTrustedMetadata(report, {
+              project: `${evidence.fixture}-fixture`,
+              commit: process.env.GITHUB_SHA,
+              mode: 'verify',
+              source: 'github-actions://runtime-proof',
+              auditedAt: new Date().toISOString(),
+              coverage: {
+                authority: 'github-actions-controller',
+                evidence_file: `runtime-proof/evidence/${evidence.fixture}.json`,
+                command_output_captured: true,
+              },
+            });
+            writeFileSync(`runtime-proof/reports/${evidence.fixture}.json`, JSON.stringify(trusted, null, 2) + '\n');
+            writeFileSync(`runtime-proof/reports/${evidence.fixture}.md`, renderMarkdown(trusted, {
+              source: 'github-actions://runtime-proof',
+              mode: 'verify',
+              timestamp: trusted.audited_at,
+            }));
+            if (!passed) console.log(`${evidence.fixture}: expected failure interpreted as FAIL`);
+          }
+          NODE
+
+      - name: Upload independently captured evidence and reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: takaven-runtime-proof-${{ github.run_id }}
+          path: runtime-proof/
+          if-no-files-found: error
+          retention-days: 14
