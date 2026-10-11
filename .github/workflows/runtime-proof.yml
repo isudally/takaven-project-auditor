@@ -84,6 +84,7 @@ jobs:
             }, null, 2) + '\n',
             { mode: 0o600 },
           );
+          console.log(JSON.stringify(evidence, null, 2));
 
           const unexpected = evidence.filter(({ exit_code, expected_exit_code }) => exit_code !== expected_exit_code);
           if (unexpected.length > 0) {
@@ -272,6 +273,7 @@ jobs:
           };
           await browser.close();
           writeFileSync('runtime-proof/playkin/smoke.json', JSON.stringify(result, null, 2) + '\n');
+          console.log(JSON.stringify(result, null, 2));
           NODE
 
       - name: Interpret browser evidence with TAKAVEN report controls
