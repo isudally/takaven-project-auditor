@@ -21,6 +21,7 @@ export function parseArgs(argv) {
   if (result.path) { result.path = resolve(result.path); if (!existsSync(result.path)) throw new Error('Local path not found'); }
   if (result.evidence) { result.evidence = resolve(result.evidence); if (!existsSync(result.evidence)) throw new Error('Evidence file not found'); }
   if (result.runnerConfig) { result.runnerConfig = resolve(result.runnerConfig); if (!existsSync(result.runnerConfig)) throw new Error('Runner config file not found'); if (result.mode !== 'verify') throw new Error('--runner-config requires --mode verify'); }
+  if (result.mode === 'verify' && !result.runnerConfig) throw new Error('--runner-config is required for verify mode; use inspect for static-only audits');
   if (result.ref) result.ref = validateGitRef(result.ref);
   return result;
 }
@@ -68,7 +69,7 @@ function renderCoverage(coverage) {
     `- Files withheld: ${coverage.withheld_files?.length ?? 0}`,
     `- Binary files omitted: ${coverage.binary_files?.length ?? 0}`,
     `- Bytes examined: ${coverage.bytes_examined ?? 0} of ${coverage.byte_budget ?? 0}`,
-    ...(coverage.follow_up_byte_budget !== undefined ? [`- Follow-up source reads: ${coverage.follow_up_bytes_examined ?? 0} of ${coverage.follow_up_byte_budget}`, `- Follow-up complete files: ${paths(coverage.follow_up_read_files)}`, `- Follow-up partial files: ${paths(coverage.follow_up_partial_files)}`, `- Follow-up searches: ${coverage.follow_up_searches?.length ?? 0}`] : []),
+    ...(coverage.follow_up_byte_budget !== undefined ? [`- Follow-up source reads: ${coverage.follow_up_bytes_examined ?? 0} of ${coverage.follow_up_byte_budget}`, `- Follow-up complete files: ${paths(coverage.follow_up_complete_files)}`, `- Follow-up partial files: ${paths(coverage.follow_up_partial_files)}`, `- Follow-up omitted files: ${paths(coverage.follow_up_omitted_files)}`, `- Follow-up searches: ${coverage.follow_up_searches?.length ?? 0}`] : []),
     `- Read files: ${paths(coverage.read_files)}`,
     `- Omitted or truncated files: ${paths(coverage.omitted_files)}`,
     `- Withheld files: ${paths(coverage.withheld_files)}`,

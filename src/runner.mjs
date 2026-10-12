@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync, existsSync, realpathSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, realpathSync, mkdirSync, rmSync, cpSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { join, resolve, sep } from 'node:path';
 import { captureEvidence, redactEvidenceText } from './evidence.mjs';
@@ -136,9 +136,7 @@ function waitForServer(child, spec, timeoutMs) {
   const readyUrl = spec.ready_url;
   const deadline = Date.now() + Math.min(spec.ready_timeout_ms ?? timeoutMs, timeoutMs);
   if (!readyUrl) {
-    const waitMs = Math.min(spec.ready_wait_ms ?? 500, timeoutMs);
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, waitMs);
-    return Boolean(child.pid);
+    return false;
   }
   while (Date.now() < deadline) {
     if (child.exitCode !== null) return false;
@@ -190,30 +188,120 @@ function runBrowserSmoke({ spec, checkout, registry, timeoutMs }) {
   return { ...browserResult, server_evidence_id: serverEvidenceId };
 }
 
+function cloneCorrectionCheckout(checkout, scratch) {
+  const correctionCheckout = join(scratch, 'correction-checkout');
+  const preparePatchableArchive = () => {
+    const initialized = spawnSync('git', ['-C', correctionCheckout, 'init', '-q'], { encoding: 'utf8', shell: false, windowsHide: true, timeout: 120000 });
+    const indexed = initialized.status === 0
+      ? spawnSync('git', ['-C', correctionCheckout, 'add', '-A'], { encoding: 'utf8', shell: false, windowsHide: true, timeout: 120000 })
+      : null;
+    return initialized.status === 0 && indexed?.status === 0;
+  };
+  mkdirSync(correctionCheckout, { recursive: true });
+  const archive = join(scratch, 'correction-checkout.tar');
+  const archived = spawnSync('git', ['-C', checkout, 'archive', '--format=tar', '--output', archive, 'HEAD'], {
+    encoding: 'utf8', shell: false, windowsHide: true, timeout: 120000,
+  });
+  if (archived.status === 0) {
+    const extracted = spawnSync('tar', ['-xf', archive, '-C', correctionCheckout], {
+      encoding: 'utf8', shell: false, windowsHide: true, timeout: 120000,
+    });
+    if (extracted.status === 0 && preparePatchableArchive()) return correctionCheckout;
+  }
+  rmSync(correctionCheckout, { recursive: true, force: true });
+  mkdirSync(correctionCheckout, { recursive: true });
+  const cloned = spawnSync('git', ['clone', '--quiet', '--no-hardlinks', '--', checkout, correctionCheckout], {
+    encoding: 'utf8', shell: false, windowsHide: true, timeout: 120000,
+  });
+  if (cloned.status === 0) return correctionCheckout;
+  rmSync(correctionCheckout, { recursive: true, force: true });
+  cpSync(checkout, correctionCheckout, { recursive: true, force: true, filter: source => !source.includes(`${sep}.git${sep}`) && !source.endsWith(`${sep}.git`) });
+  if ((existsSync(join(correctionCheckout, 'package.json')) || existsSync(join(correctionCheckout, 'app.mjs'))) && preparePatchableArchive()) return correctionCheckout;
+  throw new Error(`Disposable correction checkout failed: ${cloned.stderr ?? cloned.stdout ?? 'git clone failed'}`);
+}
+
+function patchPaths(patch) {
+  const paths = [...patch.matchAll(/^\+\+\+ b\/(.+)$/gm)].map(match => match[1]);
+  if (paths.length === 0 || paths.some(path => path === '.git' || path === 'dev/null' || path.startsWith('.git/') || path.startsWith('/') || path.includes('\\') || path.split('/').some(part => part === '..' || part === ''))) {
+    throw new Error('Correction patch contains no safe repository-relative paths');
+  }
+  return [...new Set(paths)];
+}
+
+function captureAppliedDiff(checkout, correctionCheckout, patch, timeoutMs) {
+  return patchPaths(patch).map(path => {
+    const baseline = join(checkout, ...path.split('/'));
+    const corrected = join(correctionCheckout, ...path.split('/'));
+    const diff = spawnSync('git', ['diff', '--no-index', '--no-ext-diff', '--', baseline, corrected], {
+      encoding: 'utf8', shell: false, windowsHide: true, timeout: timeoutMs,
+    });
+    if (diff.status !== 0 && diff.status !== 1) throw new Error(`Unable to capture applied diff for ${path}`);
+    return diff.stdout ?? '';
+  }).join('');
+}
+
+function requiredCorrectionChecksPassed(config, results, registry) {
+  const required = config.required_checks ?? [];
+  const checks = new Map([
+    ['setup', results.setup],
+    ['build', results.build],
+    ['browser_smoke', results.browser],
+  ]);
+  if (results.browser?.server_evidence_id) {
+    const serverRecord = registry.records.find(record => record.evidence_id === results.browser.server_evidence_id);
+    checks.set('server', serverRecord?.outcome === 'passed' ? { outcome: 'passed' } : { outcome: 'failed' });
+  }
+  if (required.length === 0) return results.build?.outcome === 'passed';
+  return required.every(check => checks.get(check)?.outcome === 'passed');
+}
+
 function applyAndVerifyPatch({ patch, checkout, config, registry, timeoutMs, scratch }) {
   if (typeof patch !== 'string' || patch.length === 0) throw new Error('Correction verification requires a patch');
-  const patchPath = join(scratch, 'controller-proposed.patch');
-  writeFileSync(patchPath, patch, { mode: 0o600 });
-  const check = spawnSync('git', ['-C', checkout, 'apply', '--check', '--', patchPath], { encoding: 'utf8', shell: false, windowsHide: true, timeout: timeoutMs });
+  const patchHash = sha256(patch);
+  let correctionCheckout;
+  try {
+    correctionCheckout = cloneCorrectionCheckout(checkout, scratch);
+  } catch (error) {
+    const evidenceId = captureEvidence(registry, {
+      type: 'correction_verification', action: 'controller_execution', operation: 'correction_verification',
+      patch_hash: patchHash, patch, outcome: 'failed', execution_verified: false,
+      observation: error.message, error: errorRecord(error),
+    });
+    return { evidence_id: evidenceId, outcome: 'failed', exit_code: 1, patch_hash: patchHash, error: error.message };
+  }
+  const correctionPatchPath = join(correctionCheckout, '.controller-proposed.patch');
+  writeFileSync(correctionPatchPath, patch, { mode: 0o600 });
+  const check = spawnSync('git', ['-C', correctionCheckout, 'apply', '--check', correctionPatchPath], { encoding: 'utf8', shell: false, windowsHide: true, timeout: timeoutMs });
   const checkOutput = redactEvidenceText(`${check.stdout ?? ''}${check.stderr ?? ''}`);
   if (check.status !== 0) {
-    const evidenceId = captureEvidence(registry, { type: 'runner_execution', action: 'patch_validation', operation: 'correction_verification', command: `git -C ${checkout} apply --check ${patchPath}`, exit_code: check.status ?? 1, stdout: checkOutput, patch_hash: sha256(patch), outcome: 'failed', execution_verified: true });
-    return { evidence_id: evidenceId, outcome: 'failed', exit_code: check.status ?? 1, patch_hash: sha256(patch), stderr: checkOutput };
+    const evidenceId = captureEvidence(registry, { type: 'patch_validation', action: 'patch_check', operation: 'correction_verification', command: `git -C ${correctionCheckout} apply --check ${correctionPatchPath}`, exit_code: check.status ?? 1, stdout: checkOutput, patch_hash: patchHash, patch, outcome: 'failed', execution_verified: true });
+    rmSync(correctionPatchPath, { force: true });
+    return { evidence_id: evidenceId, outcome: 'failed', exit_code: check.status ?? 1, patch_hash: patchHash, stderr: checkOutput };
   }
-  const applied = spawnSync('git', ['-C', checkout, 'apply', '--', patchPath], { encoding: 'utf8', shell: false, windowsHide: true, timeout: timeoutMs });
-  if (applied.status !== 0) throw new Error(`Approved correction patch failed to apply: ${applied.stderr ?? applied.stdout ?? ''}`);
-  const diff = spawnSync('git', ['-C', checkout, 'diff', '--no-ext-diff'], { encoding: 'utf8', shell: false, windowsHide: true, timeout: timeoutMs });
-  const appliedDiff = diff.stdout ?? '';
-  const build = config.build ? runCommand({ operation: 'correction_build', spec: config.build, checkout, registry, timeoutMs }) : null;
-  const browser = config.browser_smoke ? runBrowserSmoke({ spec: config.browser_smoke, checkout, registry, timeoutMs }) : null;
-  const passed = Boolean(build?.outcome === 'passed' && (!config.browser_smoke || browser?.outcome === 'passed'));
+  const applied = spawnSync('git', ['-C', correctionCheckout, 'apply', correctionPatchPath], { encoding: 'utf8', shell: false, windowsHide: true, timeout: timeoutMs });
+  if (applied.status !== 0) {
+    const output = redactEvidenceText(`${applied.stdout ?? ''}${applied.stderr ?? ''}`);
+    const evidenceId = captureEvidence(registry, { type: 'patch_validation', action: 'patch_apply', operation: 'correction_verification', command: `git -C ${correctionCheckout} apply ${correctionPatchPath}`, exit_code: applied.status ?? 1, stdout: output, patch_hash: patchHash, patch, outcome: 'failed', execution_verified: true });
+    rmSync(correctionPatchPath, { force: true });
+    return { evidence_id: evidenceId, outcome: 'failed', exit_code: applied.status ?? 1, patch_hash: patchHash, stderr: output };
+  }
+  rmSync(correctionPatchPath, { force: true });
+  const appliedDiff = captureAppliedDiff(checkout, correctionCheckout, patch, timeoutMs);
+  const setup = config.setup ? runCommand({ operation: 'correction_setup', spec: config.setup, checkout: correctionCheckout, registry, timeoutMs }) : null;
+  const build = config.build && (!setup || setup.outcome === 'passed')
+    ? runCommand({ operation: 'correction_build', spec: config.build, checkout: correctionCheckout, registry, timeoutMs }) : null;
+  const browser = config.browser_smoke && build?.outcome === 'passed'
+    ? runBrowserSmoke({ spec: config.browser_smoke, checkout: correctionCheckout, registry, timeoutMs }) : null;
+  const passed = requiredCorrectionChecksPassed(config, { setup, build, browser }, registry);
   const evidenceId = captureEvidence(registry, {
     type: 'runner_execution', action: 'correction_verification', operation: 'correction_verification',
-    patch_hash: sha256(patch), applied_diff_hash: sha256(appliedDiff), build_evidence_id: build?.evidence_id ?? null,
-    browser_evidence_id: browser?.evidence_id ?? null, outcome: passed ? 'passed' : 'failed',
+    patch_hash: patchHash, patch, applied_diff: appliedDiff, applied_diff_hash: sha256(appliedDiff),
+    setup_evidence_id: setup?.evidence_id ?? null, build_evidence_id: build?.evidence_id ?? null,
+    server_evidence_id: browser?.server_evidence_id ?? null, browser_evidence_id: browser?.evidence_id ?? null,
+    outcome: passed ? 'passed' : 'failed',
     execution_verified: true, exit_code: passed ? 0 : 1,
   });
-  return { evidence_id: evidenceId, outcome: passed ? 'passed' : 'failed', exit_code: passed ? 0 : 1, patch_hash: sha256(patch), applied_diff_hash: sha256(appliedDiff), build_evidence_id: build?.evidence_id, browser_evidence_id: browser?.evidence_id };
+  return { evidence_id: evidenceId, outcome: passed ? 'passed' : 'failed', exit_code: passed ? 0 : 1, patch_hash: patchHash, applied_diff_hash: sha256(appliedDiff), setup_evidence_id: setup?.evidence_id, build_evidence_id: build?.evidence_id, server_evidence_id: browser?.server_evidence_id, browser_evidence_id: browser?.evidence_id };
 }
 
 function validateConfig(config) {
@@ -230,7 +318,7 @@ function validateConfig(config) {
       validateCommand(spec.server.command, 'server');
       runnerEnv(spec.server);
       if (spec.server.cwd !== undefined && typeof spec.server.cwd !== 'string') throw new Error('Runner cwd must be a string for server');
-      if (spec.server.ready_url !== undefined && (typeof spec.server.ready_url !== 'string' || !/^https?:\/\//i.test(spec.server.ready_url))) throw new Error('Server ready_url must be an http(s) URL');
+      if (typeof spec.server.ready_url !== 'string' || !/^https?:\/\//i.test(spec.server.ready_url)) throw new Error('Browser server requires an http(s) ready_url');
     }
   }
   return config;

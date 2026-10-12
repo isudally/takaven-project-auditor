@@ -13,7 +13,7 @@
 - Machine-readable `report.json` and readable `report.md`.
 - Ready-made hostile-documentation and clean-control fixtures for evaluation.
 
-**Status:** The bounded static-audit path and the controller-mediated evidence-request loop are implemented and tested against clean, hostile and real-project snapshots. Inspect mode reads controller-selected source evidence, validates coverage and evidence IDs, and keeps runtime status `NOT RUN`. The investigative loop can retrieve bounded source and previously captured runtime evidence; it records pre-approved experiments as `NOT AVAILABLE` when no runner is configured. It does not yet provide a complete secure patch-application or runtime-experiment capability.
+**Status:** The bounded static-audit path and the controller-mediated evidence-request loop are implemented and tested against clean, hostile and real-project snapshots. Inspect mode reads controller-selected source evidence, validates coverage and evidence IDs, and keeps runtime status `NOT RUN`. The investigative loop can retrieve bounded source and previously captured runtime evidence, and can send a validated correction request to an explicitly configured disposable runner. Runtime claims require that runner configuration; a static or inspect-only invocation cannot claim execution.
 
 ### Work package 1 status
 
@@ -37,8 +37,8 @@ node src/audit.mjs --repo https://github.com/isudally/playkin --mode inspect --o
 # Bounded investigation using controller-mediated source/evidence requests
 node src/audit.mjs --repo https://github.com/isudally/playkin --mode inspect --investigate --evidence ./controller-evidence.json --out ./reports/playkin-investigation
 
-# Deeper audit, when you trust the repository and run on an isolated computer
-node src/audit.mjs --repo https://github.com/isudally/playkin --mode verify --out ./reports/playkin-verified
+# Deeper audit, only with an explicit approved runner configuration and an isolated computer
+node src/audit.mjs --repo https://github.com/isudally/playkin --mode verify --runner-config ./runner-config.json --out ./reports/playkin-verified
 
 # A local Git repository also works
 node src/audit.mjs --path /path/to/project --mode inspect --out ./reports/myproject
@@ -46,7 +46,7 @@ node src/audit.mjs --path /path/to/project --mode inspect --out ./reports/myproj
 
 ### Security
 
-- `verify` may execute scripts from the target project. **Use a disposable VM/container with no production credentials and no access to sensitive user data.** Codex's workspace sandbox is useful, but not a replacement for hardened isolation.
+- `verify` may execute scripts from the target project through the explicitly supplied approved runner. **Use a disposable VM/container with no production credentials and no access to sensitive user data.** Codex's workspace sandbox is useful, but not a replacement for hardened isolation.
 - The `verify` mode deliberately disables direct network access within the default Codex workspace sandbox. Dependency downloads may therefore be blocked; these must be reported as NOT RUN, not PASS. Do not relax sandboxing merely to obtain a green result.
 - Authentication belongs to Codex CLI; no model keys are written to this project.
 - Never run verification on an unknown, untrusted public repository on a machine carrying secrets.

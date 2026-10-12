@@ -1,10 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { createEvidenceRegistry, isEligibleRuntimeEvidence } from '../src/evidence.mjs';
 import { createApprovedRunner } from '../src/runner.mjs';
+
+function initGitCheckout(directory) {
+  writeFileSync(join(directory, 'app.mjs'), 'export const broken = true;\n');
+  const init = spawnSync('git', ['-C', directory, 'init', '-q'], { encoding: 'utf8' });
+  assert.equal(init.status, 0, init.stderr || init.stdout);
+  assert.equal(spawnSync('git', ['-C', directory, 'add', 'app.mjs'], { encoding: 'utf8' }).status, 0);
+  assert.equal(spawnSync('git', ['-C', directory, '-c', 'user.email=test@example.com', '-c', 'user.name=test', 'commit', '-qm', 'fixture'], { encoding: 'utf8' }).status, 0);
+}
 
 test('approved runner captures independent command evidence', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'takaven-runner-'));
@@ -12,7 +21,7 @@ test('approved runner captures independent command evidence', () => {
     const registry = createEvidenceRegistry({ source: 'fixture', commit: 'abc' });
     const runner = createApprovedRunner({ config: { version: 1, build: { command: ['node', '-e', 'process.stdout.write("ok")'] } }, registry, scratch, timeoutMs: 5000 });
     const result = runner({ operation: 'build', checkout: scratch });
-    assert.equal(result.outcome, 'passed');
+    assert.equal(result.outcome, 'passed', JSON.stringify(registry.records, null, 2));
     assert.equal(result.exit_code, 0);
     assert.equal(isEligibleRuntimeEvidence(registry, result.evidence_id, { status: 'PASS', commit: 'abc' }), true);
     assert.match(registry.records[0].stdout, /ok/);
@@ -71,11 +80,11 @@ test('runner performs setup once and preserves isolated command evidence', () =>
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
-test('runner manages a server lifecycle before the browser check', () => {
+test('runner requires an explicit server readiness URL before browser checks', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'takaven-runner-browser-'));
   try {
     const registry = createEvidenceRegistry({ source: 'fixture', commit: 'abc', requiredChecks: ['browser_smoke'] });
-    const runner = createApprovedRunner({
+    assert.throws(() => createApprovedRunner({
       config: {
         version: 1,
         browser_smoke: {
@@ -87,11 +96,55 @@ test('runner manages a server lifecycle before the browser check', () => {
         },
       },
       registry, scratch, timeoutMs: 10000,
+    }), /requires an http\(s\) ready_url/);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('runner applies corrections in a disposable checkout and requires configured checks', () => {
+  const scratch = mkdtempSync(join(process.cwd(), 'runner-correction-'));
+  try {
+    initGitCheckout(scratch);
+    const controllerScratch = join(scratch, 'controller');
+    mkdirSync(controllerScratch);
+    const registry = createEvidenceRegistry({ source: 'fixture', commit: 'abc', requiredChecks: ['setup', 'build'] });
+    const runner = createApprovedRunner({
+      config: {
+        version: 1,
+        required_checks: ['setup', 'build'],
+        setup: { command: ['node', '-e', 'process.exit(0)'] },
+        build: { command: ['node', '-e', "const text=require('fs').readFileSync('app.mjs','utf8'); process.stdout.write(text); process.exit(text.includes('broken = false') ? 0 : 1)"] },
+      },
+      registry, scratch: controllerScratch, timeoutMs: 10000,
     });
-    const result = runner({ operation: 'browser_smoke', checkout: scratch });
-    assert.equal(result.outcome, 'passed');
-    assert.equal(registry.records.find(record => record.operation === 'server').outcome, 'passed');
-    assert.equal(registry.records.find(record => record.operation === 'browser_smoke').outcome, 'passed');
+    const patch = 'diff --git a/app.mjs b/app.mjs\n--- a/app.mjs\n+++ b/app.mjs\n@@ -1 +1 @@\n-export const broken = true;\n+export const broken = false;\n';
+    const result = runner({ operation: 'correction_verification', checkout: scratch, patch });
+    assert.equal(result.outcome, 'passed', JSON.stringify(registry.records, null, 2));
+    assert.equal(readFileSync(join(scratch, 'app.mjs'), 'utf8'), 'export const broken = true;\n');
+    const evidence = registry.records.find(record => record.evidence_id === result.evidence_id);
+    assert.equal(evidence.patch, patch);
+    assert.match(evidence.applied_diff, /broken = false/);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('runner cannot call a correction verified when a required browser check is missing', () => {
+  const scratch = mkdtempSync(join(process.cwd(), 'runner-correction-gate-'));
+  try {
+    initGitCheckout(scratch);
+    const controllerScratch = join(scratch, 'controller');
+    mkdirSync(controllerScratch);
+    const registry = createEvidenceRegistry({ source: 'fixture', commit: 'abc', requiredChecks: ['build', 'browser_smoke'] });
+    const runner = createApprovedRunner({
+      config: {
+        version: 1,
+        required_checks: ['build', 'browser_smoke'],
+        build: { command: ['node', '-e', 'process.exit(0)'] },
+      },
+      registry, scratch: controllerScratch, timeoutMs: 10000,
+    });
+    const patch = 'diff --git a/app.mjs b/app.mjs\n--- a/app.mjs\n+++ b/app.mjs\n@@ -1 +1 @@\n-export const broken = true;\n+export const broken = false;\n';
+    const result = runner({ operation: 'correction_verification', checkout: scratch, patch });
+    assert.equal(result.outcome, 'failed');
+    assert.equal(result.exit_code, 1);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 

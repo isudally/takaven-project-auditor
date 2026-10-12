@@ -1,5 +1,7 @@
-name: Runtime proof
+name: Controller runtime proof (not a normal V3 audit)
 
+# This workflow is a deterministic controller/runner regression proof. It does
+# not invoke Codex and must not be presented as evidence of model-led auditing.
 on:
   workflow_dispatch:
 
@@ -8,7 +10,7 @@ permissions:
 
 jobs:
   fixtures:
-    name: Execute trusted fixtures and record evidence
+    name: Execute trusted fixtures and record controller evidence
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -78,6 +80,7 @@ jobs:
             'runtime-proof/evidence/summary.json',
             JSON.stringify({
               controller: 'github-actions-runner',
+              classification: 'controller_test_not_ai_audit',
               github_sha: process.env.GITHUB_SHA,
               captured_at: new Date().toISOString(),
               evidence,
@@ -156,6 +159,7 @@ jobs:
               auditedAt: new Date().toISOString(),
               coverage: {
                 authority: 'github-actions-controller',
+                classification: 'controller_test_not_ai_audit',
                 evidence_file: `runtime-proof/evidence/${evidence.fixture}.json`,
                 command_output_captured: true,
               },
@@ -180,7 +184,7 @@ jobs:
           retention-days: 14
 
   playkin-browser:
-    name: Browser smoke test approved Playkin revision
+    name: Browser smoke test approved Playkin revision (controller proof only)
     needs: fixtures
     if: success()
     runs-on: ubuntu-24.04
@@ -341,6 +345,7 @@ jobs:
             auditedAt: new Date().toISOString(),
             coverage: {
               authority: 'github-actions-controller',
+              classification: 'controller_test_not_ai_audit',
               evidence_file: 'runtime-proof/playkin/smoke.json',
               screenshot_file: 'runtime-proof/playkin/playkin.png',
             },

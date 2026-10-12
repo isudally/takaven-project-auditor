@@ -49,6 +49,35 @@ test('controller retrieves requested source and records immutable evidence', () 
   }
 });
 
+test('controller sends correction verification to the approved runner and preserves its result', () => {
+  const checkout = mkdtempSync(join(tmpdir(), 'takaven-investigation-correction-'));
+  try {
+    writeFileSync(join(checkout, 'app.mjs'), 'export const broken = true;\n');
+    const registry = createEvidenceRegistry({ source: 'fixture', commit: 'abc', scenario: 'correction', requiredChecks: ['build', 'browser_smoke'] });
+    const patch = 'diff --git a/app.mjs b/app.mjs\n--- a/app.mjs\n+++ b/app.mjs\n@@ -1 +1 @@\n-export const broken = true;\n+export const broken = false;\n';
+    let invocation;
+    const result = processInvestigationRequests({
+      checkout,
+      registry,
+      requests: [{ type: 'correction_verification', reason: 'Verify the proposed correction.', patch }],
+      runner: request => {
+        invocation = request;
+        const evidenceId = captureEvidence(registry, {
+          type: 'runner_execution', action: 'correction_verification', operation: 'correction_verification',
+          outcome: 'failed', execution_verified: true, exit_code: 1,
+          patch_hash: 'sha256:test', observation: 'Required browser check was unavailable.',
+        });
+        return { evidence_id: evidenceId, outcome: 'failed', exit_code: 1 };
+      },
+    });
+    assert.equal(invocation.operation, 'correction_verification');
+    assert.equal(invocation.patch, patch);
+    assert.equal(result.results[0].outcome, 'failed');
+    assert.equal(result.results[0].evidence_id.startsWith('ev-'), true);
+    assert.equal(registry.records.some(record => record.operation === 'correction_verification' && record.outcome === 'failed'), true);
+  } finally { rmSync(checkout, { recursive: true, force: true }); }
+});
+
 test('follow-up retrieval rejects git metadata and redacts repository secrets', () => {
   const checkout = mkdtempSync(join(tmpdir(), 'takaven-investigation-safe-'));
   try {
@@ -77,9 +106,27 @@ test('source search reports bounded coverage and continuation state', () => {
   } finally { rmSync(checkout, { recursive: true, force: true }); }
 });
 
+test('follow-up source reads never load a file beyond the controller byte budget', () => {
+  const checkout = mkdtempSync(join(tmpdir(), 'takaven-investigation-budget-'));
+  try {
+    const content = `${'x'.repeat(150 * 1024)}\nneedle at the end\n`;
+    writeFileSync(join(checkout, 'large.mjs'), content);
+    const registry = createEvidenceRegistry({ source: 'fixture', commit: 'abc' });
+    const result = processInvestigationRequests({ checkout, registry, requests: [{ type: 'source_read', paths: ['large.mjs'] }] });
+    assert.equal(result.retrievedBytes, 128 * 1024);
+    assert.equal(result.results[0].files[0].completeness, 'partial');
+    assert.equal(result.results[0].files[0].content.length, 128 * 1024);
+  } finally { rmSync(checkout, { recursive: true, force: true }); }
+});
+
 test('patch validation is limited to safe repository-relative unified diffs', () => {
   assert.deepEqual(validateProposedPatch('diff --git a/src/app.mjs b/src/app.mjs\n--- a/src/app.mjs\n+++ b/src/app.mjs\n@@ -1 +1 @@\n-const x = 1;\n+const x = 2;'), { paths: ['src/app.mjs'] });
   assert.throws(() => validateProposedPatch('diff --git a/../../outside b/../../outside\n--- a/../../outside\n+++ b/../../outside\n@@ -1 +1 @@\n-x\n+y'), /not allowed/);
   assert.throws(() => validateProposedPatch('const x = 2;'), /unified-diff/);
   assert.throws(() => validateProposedPatch('diff --git a/src/app.mjs b/src/app.mjs\n--- a/src/app.mjs\n+++ b/src/app.mjs\n@@\n-x\n+y'), /valid unified-diff hunks/);
+});
+
+test('schema-valid null correction patches remain policy-gated instead of being rejected as malformed', () => {
+  const registry = createEvidenceRegistry({ source: 'fixture', commit: 'abc' });
+  assert.doesNotThrow(() => validateInvestigationResponse({ action: 'request', rationale: 'Need a correction decision.', requests: [{ type: 'correction_verification', query: null, paths: null, evidence_ids: null, experiment: null, reason: 'No patch was proposed.', patch: null, continuation: null, ranges: null }] }, registry));
 });

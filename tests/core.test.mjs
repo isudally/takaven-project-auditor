@@ -12,7 +12,7 @@ const sample = {project:'demo',commit:'123',verdict:'MODIFY',executive_summary:'
 test('requires one repo source',()=> {assert.throws(()=>parseArgs([]),/exactly one/);assert.throws(()=>parseArgs(['--repo','https://github.com/a/b','--path','.']),/exactly one/);});
 test('supports exact HTTPS github repo',()=>assert.equal(normalizeGithub('https://github.com/isudally/playkin'), 'https://github.com/isudally/playkin.git'));
 test('rejects credentials, unexpected domains and extra GitHub paths',()=>{for(const url of ['https://evil.com/a/b','https://u:p@github.com/a/b','https://github.com/a/b/tree/main','http://github.com/a/b','https://github.com/a/b?x=1']) assert.throws(()=>normalizeGithub(url));});
-test('modes limited to inspect and verify',()=>{assert.equal(parseArgs(['--repo','https://github.com/a/b']).mode,'inspect');assert.throws(()=>parseArgs(['--repo','https://github.com/a/b','--mode','danger']),/must be/);});
+test('modes limited to inspect and verify',()=>{assert.equal(parseArgs(['--repo','https://github.com/a/b']).mode,'inspect');assert.throws(()=>parseArgs(['--repo','https://github.com/a/b','--mode','danger']),/must be/);assert.throws(()=>parseArgs(['--repo','https://github.com/a/b','--mode','verify']),/runner-config/);});
 test('accepts safe Git references and rejects option-like or malformed references',()=>{
   assert.equal(validateGitRef('refs/heads/feature/a'), 'refs/heads/feature/a');
   assert.equal(parseArgs(['--repo','https://github.com/a/b','--ref','v1.2.3']).ref, 'v1.2.3');

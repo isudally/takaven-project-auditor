@@ -395,6 +395,7 @@ async function runInvestigation({ binary, cwd, basePrompt, requestSchema, report
   let retrievalBytesUsed = 0;
   const retrievedPaths = new Set();
   const partialPaths = new Set();
+  const omittedLargeFiles = new Set();
   const searchCoverage = [];
   for (let round = 1; round <= MAX_INVESTIGATION_ROUNDS; round += 1) {
     const responsePath = join(cwd, `codex-investigation-${round}.json`);
@@ -413,6 +414,7 @@ async function runInvestigation({ binary, cwd, basePrompt, requestSchema, report
     retrievalBytesUsed = processed.retrievedBytes;
     for (const path of processed.retrievedPaths) retrievedPaths.add(path);
     for (const path of processed.partialPaths ?? []) partialPaths.add(path);
+    for (const path of processed.omittedLargeFiles ?? []) omittedLargeFiles.add(path);
     searchCoverage.push(...(processed.searchCoverage ?? []));
     history.push({ round, action: response.action, rationale: response.rationale, requests: response.requests, request_evidence_id: requestEvidenceId, controller_result: compactControllerResult(processed) });
     if (round === MAX_INVESTIGATION_ROUNDS) break;
@@ -421,22 +423,24 @@ async function runInvestigation({ binary, cwd, basePrompt, requestSchema, report
   const remaining = deadlineAt - Date.now();
   if (remaining <= 0) throw new Error('Investigation deadline exceeded before the final report');
   await runCodex({ binary, args: buildCodexArgs({ mode: 'inspect', schema: reportSchema, responsePath }), cwd, prompt: finalInvestigationPrompt(basePrompt, registry, history), timeoutMs: Math.min(timeoutMs, remaining) });
-  return { report: JSON.parse(readFileSync(responsePath, 'utf8')), history, coverage: { follow_up_read_files: [...retrievedPaths], follow_up_partial_files: [...partialPaths], follow_up_searches: searchCoverage, follow_up_bytes_examined: retrievalBytesUsed, follow_up_byte_budget: 128 * 1024 } };
+  return { report: JSON.parse(readFileSync(responsePath, 'utf8')), history, coverage: { follow_up_read_files: [...retrievedPaths], follow_up_complete_files: [...retrievedPaths].filter(path => !partialPaths.has(path)), follow_up_partial_files: [...partialPaths], follow_up_omitted_files: [...omittedLargeFiles], follow_up_searches: searchCoverage, follow_up_bytes_examined: retrievalBytesUsed, follow_up_byte_budget: 128 * 1024 } };
 }
 
 function mergeInvestigationCoverage(coverage, investigationCoverage) {
   const followUp = investigationCoverage ?? { follow_up_read_files: [], follow_up_bytes_examined: 0, follow_up_byte_budget: 128 * 1024 };
-  const followUpSet = new Set(followUp.follow_up_read_files);
+  const followUpCompleteSet = new Set(followUp.follow_up_complete_files ?? (followUp.follow_up_read_files ?? []).filter(path => !(followUp.follow_up_partial_files ?? []).includes(path)));
   return {
     ...coverage,
     read_files: [...new Set([...(coverage.read_files ?? []), ...followUp.follow_up_read_files])],
-    omitted_files: (coverage.omitted_files ?? []).filter(path => !followUpSet.has(path)),
+    omitted_files: [...new Set([...(coverage.omitted_files ?? []).filter(path => !followUpCompleteSet.has(path)), ...(followUp.follow_up_omitted_files ?? [])])],
     bytes_examined: (coverage.bytes_examined ?? 0) + followUp.follow_up_bytes_examined,
     byte_budget: (coverage.byte_budget ?? 0) + followUp.follow_up_byte_budget,
     initial_bytes_examined: coverage.bytes_examined ?? 0,
     initial_byte_budget: coverage.byte_budget ?? 0,
     follow_up_read_files: followUp.follow_up_read_files,
+    follow_up_complete_files: followUp.follow_up_complete_files ?? [],
     follow_up_partial_files: followUp.follow_up_partial_files ?? [],
+    follow_up_omitted_files: followUp.follow_up_omitted_files ?? [],
     follow_up_searches: followUp.follow_up_searches ?? [],
     follow_up_bytes_examined: followUp.follow_up_bytes_examined,
     follow_up_byte_budget: followUp.follow_up_byte_budget,
