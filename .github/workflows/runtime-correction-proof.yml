@@ -158,7 +158,7 @@ jobs:
           else
             cp proofs/playkin-correction/generated.patch runtime-proof/patch/v3.patch
           fi
-          echo '26547a92fe1d1e173b41d898ec88126e2b4863febb51b20cd7cca79ce3f77284  runtime-proof/patch/v3.patch' | sha256sum --check
+          echo 'b02bee7fef92e26e2dc3cf1ed5a6d2244db030586f9ce7eddc3fbb7cc7126229  runtime-proof/patch/v3.patch' | sha256sum --check
           test "$(git -C playkin rev-parse HEAD)" = "$PLAYKIN_COMMIT"
           git -C playkin diff --exit-code
           git -C playkin apply --check --index "$GITHUB_WORKSPACE/runtime-proof/patch/v3.patch"
@@ -266,7 +266,7 @@ jobs:
           const patched = readJSON('runtime-proof/patched/smoke.json');
           const patchPath = 'runtime-proof/patch/v3.patch';
           const patchHash = existsSync(patchPath) ? createHash('sha256').update(readFileSync(patchPath)).digest('hex') : null;
-          const correctPatch = patchHash === '26547a92fe1d1e173b41d898ec88126e2b4863febb51b20cd7cca79ce3f77284';
+          const correctPatch = patchHash === 'b02bee7fef92e26e2dc3cf1ed5a6d2244db030586f9ce7eddc3fbb7cc7126229';
           const validPage = x => Boolean(x && x.server_ready && x.http_ok && !x.navigation_error);
           const baselineReproduced = Boolean(validPage(baseline) && baseline.page_errors.some(e => /Cannot read properties of undefined/.test(e.message)));
           const corrected = Boolean(validPage(patched) && patched.page_errors.length === 0 && patched.positive_ui_check.passed);
