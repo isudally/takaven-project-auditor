@@ -158,14 +158,14 @@ jobs:
           else
             cp proofs/playkin-correction/generated.patch runtime-proof/patch/v3.patch
           fi
-          echo '95ac1d94d97f3991f84ba564a9ad8da8274b83935a95cddf75106ee9d6c46946  runtime-proof/patch/v3.patch' | sha256sum --check
+          echo 'b02bee7fef92e26e2dc3cf1ed5a6d2244db030586f9ce7eddc3fbb7cc7126229  runtime-proof/patch/v3.patch' | sha256sum --check
           test "$(git -C playkin rev-parse HEAD)" = "$PLAYKIN_COMMIT"
           git -C playkin diff --exit-code
           git -C playkin apply --check --index "$GITHUB_WORKSPACE/runtime-proof/patch/v3.patch"
           git -C playkin apply --index "$GITHUB_WORKSPACE/runtime-proof/patch/v3.patch"
           git -C playkin diff --cached --check
           git -C playkin diff --cached --name-only > runtime-proof/patch/paths.txt
-          printf '%s\n' src/components/EmojiPicker.tsx src/components/StyleCarousel.tsx > runtime-proof/patch/expected-paths.txt
+          printf '%s\n' src/design-tokens/theme.ts > runtime-proof/patch/expected-paths.txt
           diff -u runtime-proof/patch/expected-paths.txt runtime-proof/patch/paths.txt
           sha256sum runtime-proof/patch/v3.patch > runtime-proof/patch/v3.patch.sha256
           git -C playkin diff --cached > runtime-proof/patch/applied.diff
@@ -266,7 +266,7 @@ jobs:
           const patched = readJSON('runtime-proof/patched/smoke.json');
           const patchPath = 'runtime-proof/patch/v3.patch';
           const patchHash = existsSync(patchPath) ? createHash('sha256').update(readFileSync(patchPath)).digest('hex') : null;
-          const correctPatch = patchHash === '95ac1d94d97f3991f84ba564a9ad8da8274b83935a95cddf75106ee9d6c46946';
+          const correctPatch = patchHash === 'b02bee7fef92e26e2dc3cf1ed5a6d2244db030586f9ce7eddc3fbb7cc7126229';
           const validPage = x => Boolean(x && x.server_ready && x.http_ok && !x.navigation_error);
           const baselineReproduced = Boolean(validPage(baseline) && baseline.page_errors.some(e => /Cannot read properties of undefined/.test(e.message)));
           const corrected = Boolean(validPage(patched) && patched.page_errors.length === 0 && patched.positive_ui_check.passed);
