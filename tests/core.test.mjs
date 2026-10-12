@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs, normalizeGithub, validateGitRef, validateReport, renderMarkdown, promptForRun, applyTrustedMetadata } from '../src/core.mjs';
+import { resolveCodexCommand } from '../src/audit.mjs';
 import { createEvidenceRegistry, captureEvidence, redactEvidenceText } from '../src/evidence.mjs';
 
 const sample = {project:'demo',commit:'123',verdict:'MODIFY',executive_summary:'Build is broken.',runtime_status:'FAIL',runtime_evidence:[{check:'web boot',status:'FAIL',command:'npm test',observation:'TypeError',negative_control:'not required'}],findings:[{title:'Boot fails',severity:'HIGH',evidence_type:'OBSERVED',evidence:'startup exception',location:'src/app.js:10',recommended_fix:'fix token'}],reuse_assessment:['reuse templates'],commercial_risks:['no buyer evidence'],unverified:['sales'],next_actions:['fix boot']};
@@ -91,3 +92,9 @@ test('prompt includes controller snapshot as untrusted source evidence',()=>{
   assert.match(prompt,/runtime_evidence must be empty or every entry must have status NOT RUN/);
 });
 test('verify prompt confines work to disposable clone',()=>assert.match(promptForRun({projectName:'x',commit:'abc',mode:'verify',contract:'RULES',mission:'TASK'}),/DISPOSABLE CLONE ONLY/));
+test('Windows resolves the npm Codex command shim for Node child processes', { skip: process.platform !== 'win32' }, () => {
+  const resolved = resolveCodexCommand('codex', ['exec', '--sandbox', 'read-only']);
+  assert.match(resolved.file, /(?:^|[\\/])cmd(?:\.exe)?$/i);
+  assert.equal(resolved.args[0], '/d');
+  assert.match(resolved.args.at(-1), /codex\.cmd/i);
+});

@@ -246,9 +246,27 @@ export function buildCodexArgs({ mode, schema, responsePath }) {
   ];
 }
 
-function resolveCodexCommand(binary, args) {
+function windowsCommandQuote(value) {
+  const text = String(value);
+  if (!/[\s"&|<>^]/.test(text)) return text;
+  return `"${text.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/g, '$1$1')}"`;
+}
+
+export function resolveCodexCommand(binary, args) {
   if (/\.(?:cjs|mjs|js)$/i.test(binary)) {
     return { file: process.execPath, args: [binary, ...args] };
+  }
+  if (process.platform === 'win32' && (binary.toLowerCase().endsWith('.cmd') || !/[\\/]/.test(binary))) {
+    const commandPath = /[\\/]/.test(binary)
+      ? binary
+      : (() => {
+        const located = spawnSync('where.exe', [`${binary.replace(/\.cmd$/i, '')}.cmd`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+        return located.status === 0 ? located.stdout.split(/\r?\n/).find(Boolean)?.trim() : null;
+      })();
+    if (commandPath && existsSync(commandPath)) {
+      const commandLine = [commandPath, ...args].map(windowsCommandQuote).join(' ');
+      return { file: process.env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', commandLine] };
+    }
   }
   return { file: binary, args };
 }
