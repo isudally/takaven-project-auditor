@@ -221,12 +221,36 @@ jobs:
           let bodyText = '';
           let interactiveCount = 0;
           let rootText = '';
+          const interaction = {
+            attempted: false, click_completed: false, goal_visible_before: null,
+            expected_next_text: 'What do you want to build?', observed_next_text: null,
+            passed: false, error: null, started_at: null, duration_ms: null,
+          };
           try {
             response = await page.goto('http://127.0.0.1:4174/', { waitUntil: 'networkidle', timeout: 60000 });
             bodyText = await page.locator('body').innerText();
             rootText = await page.locator('#root').innerText();
             interactiveCount = await page.locator('button, a, input, [role="button"]').count();
             await page.screenshot({ path: 'runtime-proof/patched/screenshot.png', fullPage: true });
+            // RN Web renders these controls as divs with tabindex, not HTML buttons.
+            // Keep the semantic count as evidence; prove interactivity with an actual click.
+            if (/Welcome to GameForge/i.test(rootText) && rootText.trim().length > 20 && pageErrors.length === 0) {
+              interaction.attempted = true;
+              interaction.started_at = new Date().toISOString();
+              const interactionStart = process.hrtime.bigint();
+              try {
+                const goal = page.getByText(/^What do you want to build\?/);
+                interaction.goal_visible_before = await goal.isVisible();
+                if (interaction.goal_visible_before) throw new Error('Goal screen was already visible before the click');
+                await page.getByText('Get Started', { exact: true }).click({ timeout: 10000 });
+                interaction.click_completed = true;
+                await goal.waitFor({ state: 'visible', timeout: 10000 });
+                interaction.observed_next_text = await goal.innerText();
+                interaction.passed = /^What do you want to build\?/.test(interaction.observed_next_text);
+              } catch (error) { interaction.error = String(error); }
+              interaction.duration_ms = Math.round(Number(process.hrtime.bigint() - interactionStart) / 1e4) / 100;
+              await page.screenshot({ path: 'runtime-proof/patched/after-click.png', fullPage: true });
+            }
           } catch (error) { navigationError = String(error); }
           await context.tracing.stop({ path: 'runtime-proof/patched/trace.zip' });
           const result = {
@@ -236,7 +260,8 @@ jobs:
             server_ready: process.env.SERVER_READY === 'true', http_status: response?.status() ?? null, http_ok: response?.ok() ?? false,
             console_errors: consoleErrors, page_errors: pageErrors, failed_requests: failedRequests, navigation_error: navigationError,
             browser: { name: 'Chromium', version: browser.version() }, node: process.versions.node,
-            positive_ui_check: { body_text_length: bodyText.length, root_text_length: rootText.length, text_excerpt: rootText.slice(0,1000), interactive_count: interactiveCount, passed: /Welcome to GameForge/i.test(rootText) && rootText.trim().length > 20 && interactiveCount > 0 },
+            positive_ui_check: { body_text_length: bodyText.length, root_text_length: rootText.length, text_excerpt: rootText.slice(0,1000), interactive_count: interactiveCount, passed: /Welcome to GameForge/i.test(rootText) && rootText.trim().length > 20 && interaction.passed },
+            interaction_check: interaction,
             screenshot: 'runtime-proof/patched/screenshot.png', trace: 'runtime-proof/patched/trace.zip',
           };
           await browser.close();
