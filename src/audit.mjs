@@ -476,6 +476,7 @@ async function main(){
   const output=resolve(args.out);
   validateOutputPath(output, args.path);
   let success=false;
+  let registry = null;
   try {
     const checkout=join(scratch,'repo');
     const workingTree = args.path ? inspectLocalWorkingTree(args.path) : {
@@ -500,7 +501,7 @@ async function main(){
     const contract=readFileSync(join(root,'AGENTS.md'),'utf8');
     const mission=readFileSync(join(root,'prompts','audit.md'),'utf8');
     const snapshot=collectRepositorySnapshot(checkout);
-    const registry = createEvidenceRegistry({ source: originalSource, commit });
+    registry = createEvidenceRegistry({ source: originalSource, commit });
     captureInitialSourceEvidence(snapshot, registry);
     if (args.evidence) captureImportedEvidence(args.evidence, registry);
     const runner = args.runnerConfig ? createApprovedRunner({ config: loadRunnerConfig(args.runnerConfig), registry, scratch, timeoutMs: configuredTimeout() }) : undefined;
@@ -542,6 +543,10 @@ async function main(){
     success=true;
     console.log(`Audit complete: ${output}/report.md\nVerdict: ${report.verdict} | Runtime: ${report.runtime_status}`);
   } finally {
+    if (!success && registry) {
+      mkdirSync(output, { recursive: true });
+      writeFileSync(join(output, 'failure-evidence-registry.json'), JSON.stringify({ registry: serialiseEvidenceRegistry(registry), failure: 'Audit did not produce a validated report; evidence is retained for review.' }, null, 2) + '\n', { mode: 0o600 });
+    }
     cleanupScratch(scratch);
     if (!success) console.error('Audit incomplete. Temporary checkout removed; original project not modified.');
   }
