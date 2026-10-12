@@ -120,9 +120,10 @@ function walkTextFiles(checkout, limit = 500, offset = 0) {
 }
 
 function captureSource(registry, relativePath, content, action) {
+  const safeContent = redactEvidenceText(content);
   return captureEvidence(registry, {
     type: 'source', action, location: relativePath, bytes: Buffer.byteLength(content),
-    content_hash: contentHash(content), content: redactEvidenceText(content), outcome: 'retrieved',
+    content_hash: contentHash(safeContent), content: safeContent, outcome: 'retrieved',
   });
 }
 
