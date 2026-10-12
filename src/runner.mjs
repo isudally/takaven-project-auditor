@@ -245,6 +245,17 @@ export function createApprovedRunner({ config, registry, scratch, timeoutMs = 12
   let setupResult = null;
   return ({ operation, checkout, patch }) => {
     if (operation === 'correction_verification') return applyAndVerifyPatch({ patch, checkout, config, registry, timeoutMs, scratch });
+    if (operation === 'setup') {
+      if (setupResult) return setupResult;
+      const spec = config.setup;
+      if (!spec) {
+        const evidenceId = captureEvidence(registry, { type: 'runner_execution', action: 'approved_runner', operation, outcome: 'not_available', execution_verified: false, observation: 'No setup command is configured.' });
+        setupResult = { evidence_id: evidenceId, outcome: 'not_available', exit_code: null };
+      } else {
+        setupResult = runCommand({ operation, spec, checkout, registry, timeoutMs });
+      }
+      return setupResult;
+    }
     if (operation === 'browser_smoke') {
       if (config.setup && !setupResult) setupResult = runCommand({ operation: 'setup', spec: config.setup, checkout, registry, timeoutMs });
       if (setupResult && setupResult.outcome !== 'passed') return { evidence_id: setupResult.evidence_id, outcome: 'not_available', exit_code: null, blocked_by: 'setup' };
@@ -255,7 +266,6 @@ export function createApprovedRunner({ config, registry, scratch, timeoutMs = 12
       }
       return runBrowserSmoke({ spec, checkout, registry, timeoutMs });
     }
-    if (operation === 'setup' && setupResult) return setupResult;
     if (operation !== 'setup' && config.setup && !setupResult) setupResult = runCommand({ operation: 'setup', spec: config.setup, checkout, registry, timeoutMs });
     if (operation !== 'setup' && setupResult && setupResult.outcome !== 'passed') return { evidence_id: setupResult.evidence_id, outcome: 'not_available', exit_code: null, blocked_by: 'setup' };
     const spec = config[operation];

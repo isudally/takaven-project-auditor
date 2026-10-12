@@ -63,6 +63,7 @@ test('runner performs setup once and preserves isolated command evidence', () =>
       },
       registry, scratch, timeoutMs: 5000,
     });
+    assert.equal(runner({ operation: 'setup', checkout: scratch }).outcome, 'passed');
     assert.equal(runner({ operation: 'build', checkout: scratch }).outcome, 'passed');
     assert.equal(runner({ operation: 'build', checkout: scratch }).outcome, 'passed');
     assert.deepEqual(registry.records.map(record => record.operation), ['setup', 'build', 'build']);
