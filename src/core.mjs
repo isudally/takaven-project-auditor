@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { validateEvidenceIds } from './evidence.mjs';
+import { isEligibleRuntimeEvidence, validateEvidenceIds } from './evidence.mjs';
 
 export function parseArgs(argv) {
   const result = { mode: 'inspect', out: './reports/latest' };
@@ -8,7 +8,7 @@ export function parseArgs(argv) {
     const arg = argv[i];
     if (arg === '--help' || arg === '-h') { result.help = true; continue; }
     if (arg === '--investigate') { result.investigate = true; continue; }
-    const keys = {'--repo':'repo','--path':'path','--ref':'ref','--out':'out','--mode':'mode','--evidence':'evidence'};
+    const keys = {'--repo':'repo','--path':'path','--ref':'ref','--out':'out','--mode':'mode','--evidence':'evidence','--runner-config':'runnerConfig'};
     if (!(arg in keys)) throw new Error(`Unknown argument: ${arg}`);
     const value=argv[++i];
     if (!value || value.startsWith('--')) throw new Error(`Missing value for ${arg}`);
@@ -20,6 +20,7 @@ export function parseArgs(argv) {
   if (result.repo) result.repo = normalizeGithub(result.repo);
   if (result.path) { result.path = resolve(result.path); if (!existsSync(result.path)) throw new Error('Local path not found'); }
   if (result.evidence) { result.evidence = resolve(result.evidence); if (!existsSync(result.evidence)) throw new Error('Evidence file not found'); }
+  if (result.runnerConfig) { result.runnerConfig = resolve(result.runnerConfig); if (!existsSync(result.runnerConfig)) throw new Error('Runner config file not found'); if (result.mode !== 'verify') throw new Error('--runner-config requires --mode verify'); }
   if (result.ref) result.ref = validateGitRef(result.ref);
   return result;
 }
@@ -48,6 +49,11 @@ const escapeMd = s => String(s??'')
 const escapeNarrative = s => escapeMd(String(s??'')
   .replace(/\b(verdict|runtime\s+status|overall\s+(?:result|decision))\s*:/gi,'$1 (untrusted narrative):')
   .replace(/\b(?:javascript|data|vbscript):/gi,'unsafe scheme:'));
+const renderPatch = patch => {
+  const text = String(patch ?? '');
+  const fence = text.includes('```') ? '````' : '```';
+  return `${fence}diff\n${text}\n${fence}`;
+};
 
 function renderCoverage(coverage) {
   if (!coverage) return [];
@@ -62,7 +68,7 @@ function renderCoverage(coverage) {
     `- Files withheld: ${coverage.withheld_files?.length ?? 0}`,
     `- Binary files omitted: ${coverage.binary_files?.length ?? 0}`,
     `- Bytes examined: ${coverage.bytes_examined ?? 0} of ${coverage.byte_budget ?? 0}`,
-    ...(coverage.follow_up_byte_budget !== undefined ? [`- Follow-up source reads: ${coverage.follow_up_bytes_examined ?? 0} of ${coverage.follow_up_byte_budget}`, `- Follow-up files: ${paths(coverage.follow_up_read_files)}`] : []),
+    ...(coverage.follow_up_byte_budget !== undefined ? [`- Follow-up source reads: ${coverage.follow_up_bytes_examined ?? 0} of ${coverage.follow_up_byte_budget}`, `- Follow-up complete files: ${paths(coverage.follow_up_read_files)}`, `- Follow-up partial files: ${paths(coverage.follow_up_partial_files)}`, `- Follow-up searches: ${coverage.follow_up_searches?.length ?? 0}`] : []),
     `- Read files: ${paths(coverage.read_files)}`,
     `- Omitted or truncated files: ${paths(coverage.omitted_files)}`,
     `- Withheld files: ${paths(coverage.withheld_files)}`,
@@ -94,7 +100,7 @@ export function renderMarkdown(report, context) {
     '',
     '## Findings','',
     ...report.findings.map((f,i)=>`### Finding ${i+1}\n**Title:** ${escapeMd(f.title)}\n\n**${escapeMd(f.severity)} · ${escapeMd(f.evidence_type)}** — ${escapeMd(f.location)}\n\n${escapeNarrative(f.evidence)}\n\n**Evidence IDs:** ${escapeMd((f.evidence_ids ?? []).join(', ') || 'none')}\n\n**Recommendation:** ${escapeNarrative(f.recommended_fix)}\n`),
-    ...(report.proposed_patch ? ['## Proposed patch','',escapeNarrative(report.proposed_patch),''] : []),
+    ...(report.proposed_patch ? ['## Proposed patch','',renderPatch(report.proposed_patch),''] : []),
     '## Reuse and alternatives','',...report.reuse_assessment.map(s=>`- ${escapeNarrative(s)}`),'',
     '## Commercial and operational risks','',...report.commercial_risks.map(s=>`- ${escapeNarrative(s)}`),'',
     '## Not verified','',...(report.unverified.length?report.unverified.map(s=>`- ${escapeNarrative(s)}`):['- None recorded; check that this is justified.']),'',
@@ -127,9 +133,6 @@ export function validateReportWithOptions(value, { mode, evidenceRegistry, requi
   if (value.audited_at !== undefined) requireString(value.audited_at, 'audited_at');
   if (value.coverage !== undefined) requireObject(value.coverage, 'coverage');
   if (value.proposed_patch !== undefined && value.proposed_patch !== null) requireString(value.proposed_patch, 'proposed_patch');
-  if (requireEvidenceIds && value.findings.some(finding => finding.evidence_type !== 'UNKNOWN') && !value.proposed_patch) {
-    throw new Error('Investigative findings require a proposed_patch or an UNKNOWN classification');
-  }
 
   if (!Array.isArray(value.runtime_evidence)) throw new Error('runtime_evidence must be an array');
   value.runtime_evidence.forEach((entry, index) => {
@@ -141,7 +144,12 @@ export function validateReportWithOptions(value, { mode, evidenceRegistry, requi
     requireString(entry.negative_control, `runtime_evidence[${index}].negative_control`);
     if (!['PASS', 'FAIL', 'PARTIAL', 'NOT RUN'].includes(entry.status)) throw new Error(`Invalid runtime evidence status at index ${index}`);
     if (entry.evidence_ids !== undefined && entry.evidence_ids !== null) validateEvidenceIds(entry.evidence_ids, evidenceRegistry, `runtime_evidence[${index}].evidence_ids`);
-    if (requireEvidenceIds && entry.status !== 'NOT RUN') validateEvidenceIds(entry.evidence_ids, evidenceRegistry, `runtime_evidence[${index}].evidence_ids`);
+    if (requireEvidenceIds && entry.status !== 'NOT RUN') {
+      validateEvidenceIds(entry.evidence_ids, evidenceRegistry, `runtime_evidence[${index}].evidence_ids`);
+      if (!entry.evidence_ids.every(id => isEligibleRuntimeEvidence(evidenceRegistry, id, { status: entry.status, commit: value.commit }))) {
+        throw new Error(`runtime_evidence[${index}] is not backed by eligible controller execution evidence`);
+      }
+    }
   });
 
   if (!Array.isArray(value.findings)) throw new Error('findings must be an array');

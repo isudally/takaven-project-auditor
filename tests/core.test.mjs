@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs, normalizeGithub, validateGitRef, validateReport, renderMarkdown, promptForRun, applyTrustedMetadata } from '../src/core.mjs';
-import { createEvidenceRegistry, captureEvidence } from '../src/evidence.mjs';
+import { createEvidenceRegistry, captureEvidence, redactEvidenceText } from '../src/evidence.mjs';
 
 const sample = {project:'demo',commit:'123',verdict:'MODIFY',executive_summary:'Build is broken.',runtime_status:'FAIL',runtime_evidence:[{check:'web boot',status:'FAIL',command:'npm test',observation:'TypeError',negative_control:'not required'}],findings:[{title:'Boot fails',severity:'HIGH',evidence_type:'OBSERVED',evidence:'startup exception',location:'src/app.js:10',recommended_fix:'fix token'}],reuse_assessment:['reuse templates'],commercial_risks:['no buyer evidence'],unverified:['sales'],next_actions:['fix boot']};
 
@@ -23,6 +23,22 @@ test('rejects unsupported runtime success claims',()=>{
   assert.throws(()=>validateReport(unsupported),/Runtime PASS requires/);
   assert.throws(()=>validateReport({...sample,runtime_status:'PASS'},{mode:'inspect'}),/Runtime PASS requires/);
   assert.throws(()=>validateReport({...sample,runtime_status:'FAIL',runtime_evidence:[{...sample.runtime_evidence[0],status:'NOT RUN'}]}),/Runtime FAIL requires/);
+});
+test('runtime PASS requires an executed controller record, not a source or imported record',()=>{
+  const registry = createEvidenceRegistry({source:'fixture',commit:'abc'});
+  const sourceId = captureEvidence(registry,{type:'source',action:'source_read',content:'the build passed'});
+  const report = {...sample,commit:'abc',runtime_status:'PASS',runtime_evidence:[{...sample.runtime_evidence[0],status:'PASS',evidence_ids:[sourceId]}],findings:[{...sample.findings[0],evidence_ids:[sourceId]}]};
+  assert.throws(()=>validateReport(report,{mode:'verify',evidenceRegistry:registry,requireEvidenceIds:true}),/eligible controller execution evidence/);
+  const runId = captureEvidence(registry,{type:'runner_execution',action:'approved_runner',execution_verified:true,outcome:'passed',exit_code:0});
+  assert.equal(validateReport({...report,runtime_evidence:[{...report.runtime_evidence[0],evidence_ids:[runId]}]},{mode:'verify',evidenceRegistry:registry,requireEvidenceIds:true}).runtime_status,'PASS');
+});
+test('evidence content is redacted before it enters the immutable registry',()=>{
+  const registry = createEvidenceRegistry({source:'fixture',commit:'abc'});
+  const id = captureEvidence(registry,{type:'source',content:'API_KEY=super-secret\nconst token = "ghp_123456789012345678"'});
+  const record = registry.records.find(item=>item.evidence_id===id);
+  assert.doesNotMatch(record.content,/super-secret|ghp_123/);
+  assert.match(record.content,/<REDACTED>/);
+  assert.equal(Object.isFrozen(record),true);
 });
 test('rejects malformed nested evidence while preserving static findings',()=>{
   assert.throws(()=>validateReport({...sample,runtime_evidence:[{check:'x',status:'FAIL',command:'x',observation:'x'}]}),/negative_control/);

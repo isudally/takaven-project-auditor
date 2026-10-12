@@ -15,9 +15,11 @@
           "evidence_ids": {"type": ["array", "null"], "items": {"type": "string", "pattern": "^ev-[a-f0-9]{16}$"}, "minItems": 1},
           "experiment": {"type": ["string", "null"], "enum": ["build", "declared_test", "browser_smoke", null]},
           "reason": {"type": ["string", "null"]},
-          "patch": {"type": ["string", "null"]}
+          "patch": {"type": ["string", "null"]},
+          "continuation": {"type": ["integer", "null"], "minimum": 0},
+          "ranges": {"type": ["array", "null"], "items": {"type": ["object", "null"], "properties": {"start": {"type": "integer", "minimum": 0}, "length": {"type": "integer", "minimum": 1}}, "required": ["start", "length"], "additionalProperties": false}, "maxItems": 10}
         },
-        "required": ["type", "query", "paths", "evidence_ids", "experiment", "reason", "patch"],
+        "required": ["type", "query", "paths", "evidence_ids", "experiment", "reason", "patch", "continuation", "ranges"],
         "additionalProperties": false
       }
     }

@@ -1,13 +1,14 @@
 #!/usr/bin/env node
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, lstatSync, realpathSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname, sep, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync, spawn } from 'node:child_process';
 import { parseArgs, renderMarkdown, validateReport, applyTrustedMetadata, promptForRun } from './core.mjs';
-import { createEvidenceRegistry, captureEvidence, evidenceRegistryIndex, serialiseEvidenceRegistry } from './evidence.mjs';
+import { createEvidenceRegistry, captureEvidence, evidenceRegistryIndex, serialiseEvidenceRegistry, redactEvidenceText } from './evidence.mjs';
 import { MAX_INVESTIGATION_ROUNDS, processInvestigationRequests, validateInvestigationResponse, validateProposedPatch } from './investigation.mjs';
+import { createApprovedRunner, loadRunnerConfig } from './runner.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const help = `TAKAVEN Project Auditor v0.1\n\nUsage:\n  node src/audit.mjs --repo https://github.com/owner/repo [--ref main] [--mode inspect|verify] [--out ./reports/project]\n  node src/audit.mjs --path /path/to/local/git/repo [--mode inspect|verify]\n\nModes:\n  inspect (default): code and architecture only; never executes repository code\n  verify: execute tests/builds where feasible in a disposable copy, with Codex sandbox enabled\n\nPrerequisites: Git, Node.js >=20, Codex CLI installed and authenticated.\n\nCAUTION: The verify mode may execute repository scripts. Use only with code you trust, preferably in a separate VM/container with no production secrets. The Codex sandbox is not a substitute for a dedicated security boundary.`;
@@ -39,11 +40,7 @@ const SNAPSHOT_MAX_TOTAL_BYTES = 512 * 1024;
 const SNAPSHOT_MAX_IMPORT_SCAN_FILES = 80;
 const SNAPSHOT_MAX_INVENTORY_FILES = 1000;
 
-function redactSnapshotText(text) {
-  return text
-    .replace(/(^|\n)(\s*(?:api[_-]?key|secret|token|password|passwd|private[_-]?key)\s*[:=]\s*)[^\r\n]+/gi, '$1$2<REDACTED>')
-    .replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|AKIA[A-Z0-9]{12,})\b/g, '<REDACTED>');
-}
+const redactSnapshotText = redactEvidenceText;
 
 function snapshotPriority(relativePath) {
   const normalized = relativePath.replace(/\\/g, '/');
@@ -221,6 +218,14 @@ function configuredTimeout() {
   return value;
 }
 
+function configuredInvestigationDeadline() {
+  const raw = process.env.TAKAVEN_INVESTIGATION_DEADLINE_MS;
+  if (raw === undefined) return 15 * 60 * 1000;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1000) throw new Error('TAKAVEN_INVESTIGATION_DEADLINE_MS must be an integer of at least 1000 milliseconds');
+  return value;
+}
+
 function createScratch() {
   const base = process.env.TAKAVEN_SCRATCH_ROOT ? resolve(process.env.TAKAVEN_SCRATCH_ROOT) : tmpdir();
   mkdirSync(base, { recursive: true });
@@ -256,7 +261,8 @@ function terminateProcessTree(agent) {
     // restricted by the host; taskkill still handles descendants when allowed.
     try { agent.kill(); } catch {}
   } else {
-    agent.kill('SIGTERM');
+    try { process.kill(-agent.pid, 'SIGTERM'); } catch { try { agent.kill('SIGTERM'); } catch {} }
+    setTimeout(() => { try { process.kill(-agent.pid, 'SIGKILL'); } catch { try { agent.kill('SIGKILL'); } catch {} } }, 750).unref();
   }
 }
 
@@ -267,6 +273,7 @@ function runCodex({ binary, args, cwd, prompt, timeoutMs }) {
       cwd,
       env: codexEnvironment(),
       windowsHide: true,
+      detached: process.platform !== 'win32',
       stdio: ['pipe', 'ignore', 'pipe']
     });
     let stderr = '';
@@ -324,9 +331,9 @@ function captureImportedEvidence(path, registry) {
     throw new Error(`Evidence commit does not match audited commit ${registry.commit}`);
   }
   return captureEvidence(registry, {
-    type: 'imported_runtime', action: 'controller_import', location: path, bytes: Buffer.byteLength(raw),
+    type: 'external_unverified', action: 'controller_import', location: path, bytes: Buffer.byteLength(raw),
     content_hash: `sha256:${createHash('sha256').update(raw).digest('hex')}`, content: parsed,
-    outcome: 'captured_from_controller_file', reported_source: parsed.repository ?? parsed.source, reported_commit: parsed.commit,
+    outcome: 'unverified_external_import', execution_verified: false, reported_source: parsed.repository ?? parsed.source, reported_commit: parsed.commit,
   });
 }
 
@@ -348,9 +355,9 @@ function finalInvestigationPrompt(basePrompt, registry, history) {
   return `${basePrompt}
 
 # FINAL INVESTIGATION REPORT
-The controller has completed the bounded evidence-request loop. Return only the normal report JSON matching report.schema.json. Every OBSERVED or INFERRED finding and every executed runtime evidence entry must reference one or more valid controller evidence_ids from the registry below. UNKNOWN findings may explain what remains unresolved but must not claim verification. Do not claim a patch was applied or verified unless the registry contains evidence of that execution.
+The controller has completed the bounded evidence-request loop. Return only the normal report JSON matching report.schema.json. Every OBSERVED or INFERRED finding and every executed runtime evidence entry must reference one or more valid controller evidence_ids from the registry below. UNKNOWN findings may explain what remains unresolved but must not claim verification. Do not claim a patch was applied or verified unless the registry contains evidence of that execution. If the registry contains a trusted_controller record with execution_verified=true, classify its corresponding runtime result as PASS, FAIL or PARTIAL according to the recorded outcome; do not relabel executed evidence as NOT RUN. Use NOT RUN only when no approved execution occurred.
 
-If you return any OBSERVED or INFERRED finding that implies a code correction, proposed_patch MUST be a non-empty safe unified diff. If you cannot produce a technically precise patch from the available evidence, classify the unresolved finding as UNKNOWN instead of returning an unsupported observation. A prose recommendation without an executable patch is not a verified correction.
+If you return a proposed correction, proposed_patch must be a non-empty safe unified diff. Findings may be valid static observations without a patch; classify uncertainty explicitly and never imply that an unexecuted recommendation is a verified correction.
 
 Controller evidence registry:
 ${JSON.stringify(serialiseEvidenceRegistry(registry, { includeInitialContent: false }))}
@@ -363,13 +370,18 @@ function compactControllerResult(value) {
   return JSON.parse(JSON.stringify(value, (key, nested) => (key === 'content' || key === 'excerpt') ? undefined : nested));
 }
 
-async function runInvestigation({ binary, cwd, basePrompt, requestSchema, reportSchema, registry, checkout, timeoutMs }) {
+async function runInvestigation({ binary, cwd, basePrompt, requestSchema, reportSchema, registry, checkout, timeoutMs, runner }) {
   const history = [];
+  const deadlineAt = Date.now() + configuredInvestigationDeadline();
   let retrievalBytesUsed = 0;
   const retrievedPaths = new Set();
+  const partialPaths = new Set();
+  const searchCoverage = [];
   for (let round = 1; round <= MAX_INVESTIGATION_ROUNDS; round += 1) {
     const responsePath = join(cwd, `codex-investigation-${round}.json`);
-    await runCodex({ binary, args: buildCodexArgs({ mode: 'inspect', schema: requestSchema, responsePath }), cwd, prompt: investigationPrompt(basePrompt, registry, round, history), timeoutMs });
+    const remaining = deadlineAt - Date.now();
+    if (remaining <= 0) throw new Error('Investigation deadline exceeded before the next model round');
+    await runCodex({ binary, args: buildCodexArgs({ mode: 'inspect', schema: requestSchema, responsePath }), cwd, prompt: investigationPrompt(basePrompt, registry, round, history), timeoutMs: Math.min(timeoutMs, remaining) });
     const response = validateInvestigationResponse(JSON.parse(readFileSync(responsePath, 'utf8')), registry);
     const requestEvidenceId = captureEvidence(registry, {
       type: 'model_request', action: 'investigation_round', round, rationale: response.rationale, requests: response.requests, outcome: response.action,
@@ -378,15 +390,19 @@ async function runInvestigation({ binary, cwd, basePrompt, requestSchema, report
       history.push({ round, action: response.action, rationale: response.rationale, evidence_id: requestEvidenceId });
       break;
     }
-    const processed = processInvestigationRequests({ requests: response.requests, checkout, registry, retrievalBytesUsed });
+    const processed = processInvestigationRequests({ requests: response.requests, checkout, registry, retrievalBytesUsed, runner });
     retrievalBytesUsed = processed.retrievedBytes;
     for (const path of processed.retrievedPaths) retrievedPaths.add(path);
+    for (const path of processed.partialPaths ?? []) partialPaths.add(path);
+    searchCoverage.push(...(processed.searchCoverage ?? []));
     history.push({ round, action: response.action, rationale: response.rationale, requests: response.requests, request_evidence_id: requestEvidenceId, controller_result: compactControllerResult(processed) });
     if (round === MAX_INVESTIGATION_ROUNDS) break;
   }
   const responsePath = join(cwd, 'codex-final-report.json');
-  await runCodex({ binary, args: buildCodexArgs({ mode: 'inspect', schema: reportSchema, responsePath }), cwd, prompt: finalInvestigationPrompt(basePrompt, registry, history), timeoutMs });
-  return { report: JSON.parse(readFileSync(responsePath, 'utf8')), history, coverage: { follow_up_read_files: [...retrievedPaths], follow_up_bytes_examined: retrievalBytesUsed, follow_up_byte_budget: 128 * 1024 } };
+  const remaining = deadlineAt - Date.now();
+  if (remaining <= 0) throw new Error('Investigation deadline exceeded before the final report');
+  await runCodex({ binary, args: buildCodexArgs({ mode: 'inspect', schema: reportSchema, responsePath }), cwd, prompt: finalInvestigationPrompt(basePrompt, registry, history), timeoutMs: Math.min(timeoutMs, remaining) });
+  return { report: JSON.parse(readFileSync(responsePath, 'utf8')), history, coverage: { follow_up_read_files: [...retrievedPaths], follow_up_partial_files: [...partialPaths], follow_up_searches: searchCoverage, follow_up_bytes_examined: retrievalBytesUsed, follow_up_byte_budget: 128 * 1024 } };
 }
 
 function mergeInvestigationCoverage(coverage, investigationCoverage) {
@@ -401,6 +417,8 @@ function mergeInvestigationCoverage(coverage, investigationCoverage) {
     initial_bytes_examined: coverage.bytes_examined ?? 0,
     initial_byte_budget: coverage.byte_budget ?? 0,
     follow_up_read_files: followUp.follow_up_read_files,
+    follow_up_partial_files: followUp.follow_up_partial_files ?? [],
+    follow_up_searches: followUp.follow_up_searches ?? [],
     follow_up_bytes_examined: followUp.follow_up_bytes_examined,
     follow_up_byte_budget: followUp.follow_up_byte_budget,
   };
@@ -434,10 +452,20 @@ function inspectLocalWorkingTree(source) {
     source_type: 'local',
     uncommitted_changes_excluded: changes.length > 0,
     uncommitted_change_count: changes.length,
+    status_fingerprint: changes.join('\n'),
     warning: changes.length > 0
       ? `${changes.length} local uncommitted change(s) were excluded; only the committed Git snapshot was audited.`
       : 'No local uncommitted changes were excluded.',
   };
+}
+
+function validateOutputPath(output, source) {
+  if (existsSync(output) && lstatSync(output).isSymbolicLink()) throw new Error('Report destination cannot be a symbolic link');
+  const sourceRoot = source && existsSync(source) ? realpathSync(source) : null;
+  let parent = dirname(output);
+  while (!existsSync(parent) && dirname(parent) !== parent) parent = dirname(parent);
+  parent = realpathSync(parent);
+  if (sourceRoot && (parent === sourceRoot || parent.startsWith(`${sourceRoot}${sep}`))) throw new Error('Report destination must be outside the original project');
 }
 
 async function main(){
@@ -446,9 +474,7 @@ async function main(){
   const scratch=createScratch();
   const originalSource=args.repo||args.path;
   const output=resolve(args.out);
-  if (args.path && (output === args.path || output.startsWith(args.path + sep))) {
-    throw new Error('Report destination must be outside the original project');
-  }
+  validateOutputPath(output, args.path);
   let success=false;
   try {
     const checkout=join(scratch,'repo');
@@ -477,6 +503,7 @@ async function main(){
     const registry = createEvidenceRegistry({ source: originalSource, commit });
     captureInitialSourceEvidence(snapshot, registry);
     if (args.evidence) captureImportedEvidence(args.evidence, registry);
+    const runner = args.runnerConfig ? createApprovedRunner({ config: loadRunnerConfig(args.runnerConfig), registry, scratch, timeoutMs: configuredTimeout() }) : undefined;
     let coverage = { ...snapshot.coverage, working_tree: workingTree };
     const prompt=promptForRun({projectName:name,commit,mode:args.mode,contract,mission,targetPath:checkout,snapshot:{ ...snapshot, coverage, evidence_registry: evidenceRegistryIndex(registry) }});
     const schema=join(root,'report.schema.json');
@@ -487,7 +514,7 @@ async function main(){
       const investigation = await runInvestigation({
         binary: process.env.TAKAVEN_CODEX_BIN || 'codex', cwd: scratch, basePrompt: prompt,
         requestSchema: join(root, 'investigation-request.schema.json'), reportSchema: schema,
-        registry, checkout, timeoutMs: configuredTimeout(),
+        registry, checkout, timeoutMs: configuredTimeout(), runner,
       });
       modelReport = investigation.report;
       investigationHistory = investigation.history;
@@ -498,7 +525,7 @@ async function main(){
       await runCodex({binary:process.env.TAKAVEN_CODEX_BIN||'codex',args:codexArgs,cwd:scratch,prompt,timeoutMs:configuredTimeout()});
       modelReport = JSON.parse(readFileSync(responsePath,'utf8'));
     }
-    validateReport(modelReport,{mode:args.mode,evidenceRegistry:registry,requireEvidenceIds:Boolean(args.investigate)});
+    validateReport(modelReport,{mode:args.mode,evidenceRegistry:registry,requireEvidenceIds:args.mode === 'verify' || Boolean(args.investigate)});
     if (args.investigate && modelReport.proposed_patch) {
       const patch = validateProposedPatch(modelReport.proposed_patch);
       captureEvidence(registry, { type: 'proposed_patch', action: 'model_output', outcome: 'captured_not_applied', paths: patch.paths, patch: modelReport.proposed_patch });
@@ -508,7 +535,9 @@ async function main(){
     mkdirSync(output,{recursive:true});
     writeFileSync(join(output,'report.json'),JSON.stringify(report,null,2)+'\n',{mode:0o600});
     writeFileSync(join(output,'report.md'),renderMarkdown(report,{source:originalSource,mode:args.mode,timestamp:new Date().toISOString()}),{mode:0o600});
-    writeFileSync(join(output,'audit-metadata.json'),JSON.stringify({source:originalSource,commit,mode:args.mode,coverage,createdAt:new Date().toISOString(),originalUntouched:true},null,2)+'\n');
+    const originalUntouched = !args.path || inspectLocalWorkingTree(args.path).status_fingerprint === workingTree.status_fingerprint;
+    if (!originalUntouched) throw new Error('Original project changed during audit; refusing to report it as untouched');
+    writeFileSync(join(output,'audit-metadata.json'),JSON.stringify({source:originalSource,commit,mode:args.mode,coverage,createdAt:new Date().toISOString(),originalUntouched},null,2)+'\n');
     writeFileSync(join(output,'evidence-registry.json'),JSON.stringify({registry:serialiseEvidenceRegistry(registry),investigation:investigationHistory},null,2)+'\n',{mode:0o600});
     success=true;
     console.log(`Audit complete: ${output}/report.md\nVerdict: ${report.verdict} | Runtime: ${report.runtime_status}`);

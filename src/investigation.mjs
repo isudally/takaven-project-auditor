@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
-import { readFileSync, statSync, readdirSync } from 'node:fs';
-import { join, relative, sep } from 'node:path';
-import { captureEvidence, validateEvidenceIds } from './evidence.mjs';
+import { readFileSync, statSync, readdirSync, lstatSync, realpathSync } from 'node:fs';
+import { join, relative, sep, resolve } from 'node:path';
+import { captureEvidence, redactEvidenceText, validateEvidenceIds } from './evidence.mjs';
 
 export const MAX_INVESTIGATION_ROUNDS = 4;
 export const MAX_REQUESTS_PER_ROUND = 8;
@@ -14,8 +14,10 @@ const SENSITIVE = /^(?:\.env(?:\..*)?|.*\.(?:pem|key|p12|pfx|sqlite|db))$/i;
 
 export function validateProposedPatch(patch) {
   if (typeof patch !== 'string' || patch.length === 0 || patch.length > 200 * 1024) throw new Error('Proposed patch must be a non-empty bounded string');
+  if (!/^diff --git a\/[^\r\n]+ b\/[^\r\n]+$/m.test(patch)) throw new Error('Proposed patch must contain a unified-diff git header');
   const paths = [...patch.matchAll(/^\+\+\+ b\/(.+)$/gm), ...patch.matchAll(/^--- a\/(.+)$/gm)].map(match => match[1]);
   if (paths.length === 0) throw new Error('Proposed patch must contain unified-diff paths');
+  if (paths.length % 2 !== 0 || !/^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/m.test(patch)) throw new Error('Proposed patch must contain valid unified-diff hunks');
   for (const path of paths) {
     const normalized = path.replace(/\\/g, '/');
     if (normalized.startsWith('/') || normalized.split('/').some(part => part === '..') || normalized === '/dev/null' || normalized.startsWith('.git/')) throw new Error(`Proposed patch path is not allowed: ${path}`);
@@ -26,7 +28,7 @@ export function validateProposedPatch(patch) {
 function safeRelativePath(value) {
   if (typeof value !== 'string' || value.length === 0 || value.length > 300) throw new Error('Investigation path must be a short relative path');
   const normalized = value.replace(/\\/g, '/');
-  if (normalized.startsWith('/') || normalized.split('/').some(part => part === '..') || SENSITIVE.test(normalized.split('/').at(-1))) {
+  if (normalized.startsWith('/') || normalized.split('/').some(part => part === '..' || part === '.git') || SENSITIVE.test(normalized.split('/').at(-1))) {
     throw new Error(`Investigation path is not allowed: ${value}`);
   }
   return normalized;
@@ -48,15 +50,22 @@ export function validateInvestigationResponse(value, registry) {
   if (value.action === 'final' && value.requests.length !== 0) throw new Error('Final investigation response cannot contain requests');
   for (const [index, request] of value.requests.entries()) {
     if (!request || typeof request !== 'object' || Array.isArray(request)) throw new Error(`Invalid investigation request ${index}`);
-    const requestKeys = new Set(['type', 'query', 'paths', 'evidence_ids', 'experiment', 'reason', 'patch']);
+    const requestKeys = new Set(['type', 'query', 'paths', 'evidence_ids', 'experiment', 'reason', 'patch', 'continuation', 'ranges']);
     for (const key of Object.keys(request)) if (!requestKeys.has(key)) throw new Error(`Unexpected investigation request field: ${key}`);
     if (!REQUEST_TYPES.has(request.type)) throw new Error(`Unsupported investigation request type: ${request.type}`);
-    if (request.reason !== undefined && (typeof request.reason !== 'string' || request.reason.length > 1000)) throw new Error(`Invalid request reason ${index}`);
+    if (request.reason !== undefined && request.reason !== null && (typeof request.reason !== 'string' || request.reason.length > 1000)) throw new Error(`Invalid request reason ${index}`);
     if (request.type === 'source_search') safeQuery(request.query);
     if (request.type === 'source_read') {
       if (!Array.isArray(request.paths) || request.paths.length === 0 || request.paths.length > 10) throw new Error('source_read requires 1-10 paths');
       request.paths.forEach(safeRelativePath);
+      if (request.ranges !== undefined && request.ranges !== null) {
+        if (!Array.isArray(request.ranges) || request.ranges.length !== request.paths.length) throw new Error('source_read ranges must match paths');
+        request.ranges.forEach(range => {
+          if (!range || !Number.isInteger(range.start) || !Number.isInteger(range.length) || range.start < 0 || range.length <= 0 || range.length > MAX_RETRIEVAL_BYTES) throw new Error('Invalid source_read range');
+        });
+      }
     }
+    if (request.type === 'source_search' && request.continuation !== undefined && request.continuation !== null && (!Number.isInteger(request.continuation) || request.continuation < 0)) throw new Error('Invalid source_search continuation');
     if (request.type === 'runtime_evidence' && request.evidence_ids !== undefined && request.evidence_ids !== null) validateEvidenceIds(request.evidence_ids, registry, `requests[${index}].evidence_ids`);
     if (request.type === 'experiment' && !EXPERIMENTS.has(request.experiment)) throw new Error(`Experiment is not pre-approved: ${request.experiment}`);
     if (request.type === 'correction_verification') {
@@ -72,53 +81,79 @@ function contentHash(content) {
 }
 
 function withinCheckout(checkout, relativePath) {
-  const absolute = join(checkout, relativePath);
-  const root = `${checkout}${sep}`;
-  if (!absolute.startsWith(root)) throw new Error('Investigation path escaped checkout');
-  return absolute;
+  const root = realpathSync(checkout);
+  const absolute = resolve(root, relativePath);
+  const lexicalRoot = `${root}${sep}`;
+  if (absolute !== root && !absolute.startsWith(lexicalRoot)) throw new Error('Investigation path escaped checkout');
+  const parts = relativePath.replace(/\\/g, '/').split('/');
+  if (parts.includes('.git')) throw new Error('Investigation path is not allowed: .git');
+  let current = root;
+  for (const part of parts.slice(0, -1)) {
+    current = join(current, part);
+    if (lstatSync(current).isSymbolicLink()) throw new Error('Investigation path crosses a symbolic link');
+  }
+  if (lstatSync(absolute).isSymbolicLink()) throw new Error('Investigation path resolves through a symbolic link');
+  const real = realpathSync(absolute);
+  if (real !== root && !real.startsWith(lexicalRoot)) throw new Error('Investigation path resolved outside checkout');
+  return real;
 }
 
-function walkTextFiles(checkout, limit = 500) {
+function walkTextFiles(checkout, limit = 500, offset = 0) {
   const files = [];
+  let seen = 0;
+  let truncated = false;
   function visit(directory) {
-    if (files.length >= limit) return;
+    if (files.length >= limit) { truncated = true; return; }
     for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
       if (SKIP_DIRS.has(entry.name)) continue;
       const path = join(directory, entry.name);
       if (entry.isDirectory()) visit(path);
-      else if (entry.isFile() && !SENSITIVE.test(entry.name)) files.push(path);
-      if (files.length >= limit) return;
+      else if (entry.isFile() && !SENSITIVE.test(entry.name)) {
+        if (seen++ >= offset && files.length < limit) files.push(path);
+        else if (seen > offset + limit) truncated = true;
+      }
+      if (files.length >= limit) { truncated = true; return; }
     }
   }
   visit(checkout);
-  return files;
+  return { files, truncated, nextOffset: truncated ? offset + files.length : null, examined: seen };
 }
 
 function captureSource(registry, relativePath, content, action) {
   return captureEvidence(registry, {
     type: 'source', action, location: relativePath, bytes: Buffer.byteLength(content),
-    content_hash: contentHash(content), content, outcome: 'retrieved',
+    content_hash: contentHash(content), content: redactEvidenceText(content), outcome: 'retrieved',
   });
 }
 
-export function processInvestigationRequests({ requests, checkout, registry, retrievalBytesUsed = 0 }) {
+export function processInvestigationRequests({ requests, checkout, registry, retrievalBytesUsed = 0, runner } = {}) {
   const results = [];
   let retrievedBytes = retrievalBytesUsed;
   const retrievedPaths = new Set();
+  const partialPaths = new Set();
+  const searchCoverage = [];
   for (const request of requests) {
     if (request.type === 'runtime_evidence') {
-      const evidenceIds = request.evidence_ids ?? registry.records.filter(record => record.type === 'imported_runtime').map(record => record.evidence_id);
+      const evidenceIds = request.evidence_ids ?? registry.records.filter(record => ['external_unverified', 'runner_execution', 'browser_execution', 'executed_command'].includes(record.type)).map(record => record.evidence_id);
       results.push({ type: request.type, evidence_ids: evidenceIds, records: registry.records.filter(record => evidenceIds.includes(record.evidence_id)) });
       continue;
     }
     if (request.type === 'source_read') {
       const files = [];
-      for (const relativePath of request.paths) {
-        const absolute = withinCheckout(checkout, relativePath);
+      for (const [pathIndex, relativePath] of request.paths.entries()) {
+        let absolute;
+        try { absolute = withinCheckout(checkout, relativePath); } catch (error) { files.push({ path: relativePath, outcome: 'unavailable', error: error.message }); continue; }
         let content;
         try {
-          if (statSync(absolute).size > MAX_RETRIEVAL_BYTES - retrievedBytes) throw new Error('retrieval budget exceeded');
-          content = readFileSync(absolute, 'utf8');
+          const range = request.ranges?.[pathIndex];
+          const size = statSync(absolute).size;
+          const remaining = MAX_RETRIEVAL_BYTES - retrievedBytes;
+          const start = range?.start ?? 0;
+          const length = Math.min(range?.length ?? size, remaining);
+          if (remaining <= 0 || length <= 0) throw new Error('retrieval budget exceeded');
+          const raw = readFileSync(absolute, 'utf8');
+          content = raw.slice(start, start + length);
+          if (start > 0 || content.length < raw.length) partialPaths.add(relativePath);
         } catch (error) {
           files.push({ path: relativePath, outcome: 'unavailable', error: error.message });
           continue;
@@ -127,7 +162,7 @@ export function processInvestigationRequests({ requests, checkout, registry, ret
         retrievedBytes += Buffer.byteLength(content);
         retrievedPaths.add(relativePath);
         const evidenceId = captureSource(registry, relativePath, content, 'source_read');
-        files.push({ path: relativePath, evidence_id: evidenceId, content });
+        files.push({ path: relativePath, evidence_id: evidenceId, content: redactEvidenceText(content), completeness: content.length < statSync(absolute).size ? 'partial' : 'complete' });
       }
       results.push({ type: request.type, files });
       continue;
@@ -135,7 +170,8 @@ export function processInvestigationRequests({ requests, checkout, registry, ret
     if (request.type === 'source_search') {
       const matches = [];
       const query = request.query;
-      for (const absolute of walkTextFiles(checkout)) {
+      const inventory = walkTextFiles(checkout, 500, request.continuation ?? 0);
+      for (const absolute of inventory.files) {
         if (retrievedBytes >= MAX_RETRIEVAL_BYTES) break;
         const relativePath = relative(checkout, absolute).split(sep).join('/');
         let content;
@@ -143,32 +179,36 @@ export function processInvestigationRequests({ requests, checkout, registry, ret
         if (content.includes('\u0000')) continue;
         const lineMatches = content.split(/\r?\n/).map((line, lineNumber) => ({ lineNumber: lineNumber + 1, line })).filter(item => item.line.toLowerCase().includes(query.toLowerCase())).slice(0, 20);
         if (lineMatches.length === 0) continue;
-        const excerpt = lineMatches.map(item => `${item.lineNumber}: ${item.line}`).join('\n');
+        const excerpt = redactEvidenceText(lineMatches.map(item => `${item.lineNumber}: ${item.line}`).join('\n'));
         if (retrievedBytes + Buffer.byteLength(excerpt) > MAX_RETRIEVAL_BYTES) break;
         retrievedBytes += Buffer.byteLength(excerpt);
         retrievedPaths.add(relativePath);
         const evidenceId = captureSource(registry, relativePath, excerpt, 'source_search');
         matches.push({ path: relativePath, evidence_id: evidenceId, excerpt });
       }
-      results.push({ type: request.type, query, matches });
+      searchCoverage.push({ query, continuation: request.continuation ?? 0, examined_files: inventory.examined, truncated: inventory.truncated, next_continuation: inventory.nextOffset });
+      results.push({ type: request.type, query, matches, examined_files: inventory.examined, truncated: inventory.truncated, next_continuation: inventory.nextOffset });
       continue;
     }
     if (request.type === 'experiment') {
-      const evidenceId = captureEvidence(registry, {
-        type: 'experiment', action: 'preapproved_experiment', experiment: request.experiment,
-        outcome: 'not_available', observation: 'No experiment runner was provided to this controller invocation; no repository command was executed.',
-      });
-      results.push({ type: request.type, experiment: request.experiment, evidence_id: evidenceId, outcome: 'not_available' });
+      if (typeof runner !== 'function') {
+        const evidenceId = captureEvidence(registry, { type: 'experiment', action: 'preapproved_experiment', experiment: request.experiment, outcome: 'not_available', execution_verified: false, observation: 'No approved runner was provided; no repository command was executed.' });
+        results.push({ type: request.type, experiment: request.experiment, evidence_id: evidenceId, outcome: 'not_available' });
+      } else {
+        const execution = runner({ operation: request.experiment, checkout, registry });
+        results.push({ type: request.type, experiment: request.experiment, ...execution });
+      }
       continue;
     }
     if (request.type === 'correction_verification') {
       const evidenceId = captureEvidence(registry, {
         type: 'correction_verification', action: 'policy_gate', outcome: 'not_available',
-        observation: 'Patch application and runtime verification require an explicitly configured disposable runner; none was provided to this controller invocation.',
+        observation: typeof runner === 'function' ? 'Correction verification was requested from the configured controller runner.' : 'Patch application and runtime verification require an explicitly configured disposable runner; none was provided to this controller invocation.',
+        execution_verified: false,
         proposed_patch: request.patch,
       });
       results.push({ type: request.type, evidence_id: evidenceId, outcome: 'not_available' });
     }
   }
-  return { results, retrievedBytes, retrievedPaths: [...retrievedPaths] };
+  return { results, retrievedBytes, retrievedPaths: [...retrievedPaths], partialPaths: [...partialPaths], searchCoverage };
 }

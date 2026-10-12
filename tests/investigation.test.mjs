@@ -16,7 +16,7 @@ test('validates bounded investigation requests and rejects unsafe controls', () 
   assert.throws(() => validateInvestigationResponse({ action: 'request', rationale: 'escape', requests: [{ type: 'source_read', paths: ['../../secret'] }] }, registry), /not allowed/);
   assert.throws(() => validateInvestigationResponse({ action: 'request', rationale: 'arbitrary', requests: [{ type: 'experiment', experiment: 'shell' }] }, registry), /pre-approved/);
   assert.throws(() => validateInvestigationResponse({ action: 'request', rationale: 'forge', requests: [{ type: 'runtime_evidence', evidence_ids: ['ev-0000000000000000'] }] }, registry), /unknown evidence ID/);
-  assert.throws(() => validateInvestigationResponse({ action: 'request', rationale: 'unsafe patch', requests: [{ type: 'correction_verification', reason: 'try it', patch: '--- a/../../outside\n+++ b/../../outside\n' }] }, registry), /not allowed/);
+  assert.throws(() => validateInvestigationResponse({ action: 'request', rationale: 'unsafe patch', requests: [{ type: 'correction_verification', reason: 'try it', patch: 'diff --git a/../../outside b/../../outside\n--- a/../../outside\n+++ b/../../outside\n@@ -1 +1 @@\n-x\n+y' }] }, registry), /not allowed/);
 });
 
 test('controller retrieves requested source and records immutable evidence', () => {
@@ -43,13 +43,43 @@ test('controller retrieves requested source and records immutable evidence', () 
     assert.ok(sourceResult.retrievedPaths.includes('src/app.mjs'));
     assert.ok(registry.records.every(record => Object.isFrozen(record)));
     assert.equal(registry.records.some(record => record.type === 'experiment' && record.outcome === 'not_available'), true);
+    assert.equal(sourceResult.results[0].files[0].completeness, 'complete');
   } finally {
     rmSync(checkout, { recursive: true, force: true });
   }
 });
 
+test('follow-up retrieval rejects git metadata and redacts repository secrets', () => {
+  const checkout = mkdtempSync(join(tmpdir(), 'takaven-investigation-safe-'));
+  try {
+    mkdirSync(join(checkout, '.git'));
+    writeFileSync(join(checkout, '.git', 'config'), 'url = https://user:password@example.invalid/repo\n');
+    mkdirSync(join(checkout, 'src'));
+    writeFileSync(join(checkout, 'src', 'secret.mjs'), 'const token = "ghp_123456789012345678";\n');
+    const registry = createEvidenceRegistry({ source: 'fixture', commit: 'abc' });
+    const result = processInvestigationRequests({ checkout, registry, requests: [
+      { type: 'source_read', paths: ['.git/config'] },
+      { type: 'source_read', paths: ['src/secret.mjs'] },
+    ] });
+    assert.equal(result.results[0].files[0].outcome, 'unavailable');
+    assert.doesNotMatch(JSON.stringify(registry.records), /ghp_123|password@example/);
+  } finally { rmSync(checkout, { recursive: true, force: true }); }
+});
+
+test('source search reports bounded coverage and continuation state', () => {
+  const checkout = mkdtempSync(join(tmpdir(), 'takaven-investigation-search-'));
+  try {
+    for (let index = 0; index < 505; index += 1) writeFileSync(join(checkout, `file-${String(index).padStart(3, '0')}.mjs`), 'needle\n');
+    const registry = createEvidenceRegistry({ source: 'fixture', commit: 'abc' });
+    const result = processInvestigationRequests({ checkout, registry, requests: [{ type: 'source_search', query: 'needle' }] });
+    assert.equal(result.results[0].truncated, true);
+    assert.equal(typeof result.results[0].next_continuation, 'number');
+  } finally { rmSync(checkout, { recursive: true, force: true }); }
+});
+
 test('patch validation is limited to safe repository-relative unified diffs', () => {
-  assert.deepEqual(validateProposedPatch('--- a/src/app.mjs\n+++ b/src/app.mjs\n@@\n-const x = 1;\n+const x = 2;'), { paths: ['src/app.mjs'] });
-  assert.throws(() => validateProposedPatch('--- a/../../outside\n+++ b/../../outside\n'), /not allowed/);
+  assert.deepEqual(validateProposedPatch('diff --git a/src/app.mjs b/src/app.mjs\n--- a/src/app.mjs\n+++ b/src/app.mjs\n@@ -1 +1 @@\n-const x = 1;\n+const x = 2;'), { paths: ['src/app.mjs'] });
+  assert.throws(() => validateProposedPatch('diff --git a/../../outside b/../../outside\n--- a/../../outside\n+++ b/../../outside\n@@ -1 +1 @@\n-x\n+y'), /not allowed/);
   assert.throws(() => validateProposedPatch('const x = 2;'), /unified-diff/);
+  assert.throws(() => validateProposedPatch('diff --git a/src/app.mjs b/src/app.mjs\n--- a/src/app.mjs\n+++ b/src/app.mjs\n@@\n-x\n+y'), /valid unified-diff hunks/);
 });
