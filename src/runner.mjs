@@ -84,12 +84,16 @@ function applyAndVerifyPatch({ patch, checkout, config, registry, timeoutMs, scr
 export function loadRunnerConfig(path) {
   const config = JSON.parse(readFileSync(path, 'utf8'));
   if (!config || config.version !== 1 || typeof config !== 'object') throw new Error('Runner config must declare version 1');
+  if (config.scenario !== undefined && (typeof config.scenario !== 'string' || config.scenario.length === 0)) throw new Error('Runner scenario must be a non-empty string');
+  if (config.required_checks !== undefined && (!Array.isArray(config.required_checks) || config.required_checks.some(check => typeof check !== 'string' || check.length === 0))) throw new Error('Runner required_checks must be an array of names');
   for (const [operation, spec] of Object.entries({ build: config.build, declared_test: config.declared_test, browser_smoke: config.browser_smoke })) if (spec) validateCommand(spec.command, operation);
   return config;
 }
 
 export function createApprovedRunner({ config, registry, scratch, timeoutMs = 120000 }) {
   if (!config || config.version !== 1) throw new Error('Runner config must declare version 1');
+  if (config.scenario !== undefined && (typeof config.scenario !== 'string' || config.scenario.length === 0)) throw new Error('Runner scenario must be a non-empty string');
+  if (config.required_checks !== undefined && (!Array.isArray(config.required_checks) || config.required_checks.some(check => typeof check !== 'string' || check.length === 0))) throw new Error('Runner required_checks must be an array of names');
   for (const [operation, spec] of Object.entries({ build: config.build, declared_test: config.declared_test, browser_smoke: config.browser_smoke })) if (spec) {
     validateCommand(spec.command, operation);
     runnerEnv(spec);

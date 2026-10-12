@@ -9,6 +9,7 @@ import { parseArgs, renderMarkdown, validateReport, applyTrustedMetadata, prompt
 import { createEvidenceRegistry, captureEvidence, evidenceRegistryIndex, serialiseEvidenceRegistry, redactEvidenceText } from './evidence.mjs';
 import { MAX_INVESTIGATION_ROUNDS, processInvestigationRequests, validateInvestigationResponse, validateProposedPatch } from './investigation.mjs';
 import { createApprovedRunner, loadRunnerConfig } from './runner.mjs';
+import { applyControllerRuntimeResults } from './runtime.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const help = `TAKAVEN Project Auditor v0.1\n\nUsage:\n  node src/audit.mjs --repo https://github.com/owner/repo [--ref main] [--mode inspect|verify] [--out ./reports/project]\n  node src/audit.mjs --path /path/to/local/git/repo [--mode inspect|verify]\n\nModes:\n  inspect (default): code and architecture only; never executes repository code\n  verify: execute tests/builds where feasible in a disposable copy, with Codex sandbox enabled\n\nPrerequisites: Git, Node.js >=20, Codex CLI installed and authenticated.\n\nCAUTION: The verify mode may execute repository scripts. Use only with code you trust, preferably in a separate VM/container with no production secrets. The Codex sandbox is not a substitute for a dedicated security boundary.`;
@@ -501,10 +502,11 @@ async function main(){
     const contract=readFileSync(join(root,'AGENTS.md'),'utf8');
     const mission=readFileSync(join(root,'prompts','audit.md'),'utf8');
     const snapshot=collectRepositorySnapshot(checkout);
-    registry = createEvidenceRegistry({ source: originalSource, commit });
+    const runnerConfig = args.runnerConfig ? loadRunnerConfig(args.runnerConfig) : null;
+    registry = createEvidenceRegistry({ source: originalSource, commit, scenario: runnerConfig?.scenario ?? 'default', requiredChecks: runnerConfig?.required_checks ?? [] });
     captureInitialSourceEvidence(snapshot, registry);
     if (args.evidence) captureImportedEvidence(args.evidence, registry);
-    const runner = args.runnerConfig ? createApprovedRunner({ config: loadRunnerConfig(args.runnerConfig), registry, scratch, timeoutMs: configuredTimeout() }) : undefined;
+    const runner = runnerConfig ? createApprovedRunner({ config: runnerConfig, registry, scratch, timeoutMs: configuredTimeout() }) : undefined;
     let coverage = { ...snapshot.coverage, working_tree: workingTree };
     const prompt=promptForRun({projectName:name,commit,mode:args.mode,contract,mission,targetPath:checkout,snapshot:{ ...snapshot, coverage, evidence_registry: evidenceRegistryIndex(registry) }});
     const schema=join(root,'report.schema.json');
@@ -526,12 +528,19 @@ async function main(){
       await runCodex({binary:process.env.TAKAVEN_CODEX_BIN||'codex',args:codexArgs,cwd:scratch,prompt,timeoutMs:configuredTimeout()});
       modelReport = JSON.parse(readFileSync(responsePath,'utf8'));
     }
-    validateReport(modelReport,{mode:args.mode,evidenceRegistry:registry,requireEvidenceIds:args.mode === 'verify' || Boolean(args.investigate)});
-    if (args.investigate && modelReport.proposed_patch) {
-      const patch = validateProposedPatch(modelReport.proposed_patch);
+    const auditedAt = new Date().toISOString();
+    const trustedModelReport = applyTrustedMetadata(modelReport, { project: name, commit, mode: args.mode, source: originalSource, auditedAt, coverage });
+    const modelReportEvidenceId = captureEvidence(registry, { type: 'model_report', action: 'model_output', outcome: 'received', content: modelReport, runtime_status: modelReport.runtime_status, runtime_evidence: modelReport.runtime_evidence });
+    const runtimeHandoff = applyControllerRuntimeResults(trustedModelReport, registry, { scenario: registry.scenario });
+    if (runtimeHandoff.contradictions.length > 0) {
+      captureEvidence(registry, { type: 'model_runtime_contradiction', action: 'controller_validation', outcome: 'failed_attempt', model_report_evidence_id: modelReportEvidenceId, contradictions: runtimeHandoff.contradictions });
+    }
+    validateReport(runtimeHandoff.report,{mode:args.mode,evidenceRegistry:registry,requireEvidenceIds:args.mode === 'verify' || Boolean(args.investigate)});
+    if (args.investigate && runtimeHandoff.report.proposed_patch) {
+      const patch = validateProposedPatch(runtimeHandoff.report.proposed_patch);
       captureEvidence(registry, { type: 'proposed_patch', action: 'model_output', outcome: 'captured_not_applied', paths: patch.paths, patch: modelReport.proposed_patch });
     }
-    const report=applyTrustedMetadata(modelReport,{project:name,commit,mode:args.mode,source:originalSource,auditedAt:new Date().toISOString(),coverage});
+    const report = runtimeHandoff.report;
     // Verify mode changes are never pushed and never leave the disposable workspace.
     mkdirSync(output,{recursive:true});
     writeFileSync(join(output,'report.json'),JSON.stringify(report,null,2)+'\n',{mode:0o600});

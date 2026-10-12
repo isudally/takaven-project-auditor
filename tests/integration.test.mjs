@@ -78,9 +78,29 @@ function investigationScenario(){
   } finally {rmSync(tmp,{recursive:true,force:true});}
 }
 
+function executionHandoffScenario(){
+  const tmp=makeTemp('auditor-execution-handoff-test');
+  try{
+    const source=initFixture(tmp);
+    const config=join(tmp,'runner.json');
+    writeFileSync(config, JSON.stringify({version:1,scenario:'fixture-build',required_checks:['build'],build:{command:['node','-e','process.stdout.write("controller-build")']}}));
+    const out=join(tmp,'report');
+    const result=run(process.execPath,[join(project,'src','audit.mjs'),'--path',source,'--mode','verify','--investigate','--runner-config',config,'--out',out],{env:{...process.env,TAKAVEN_CODEX_BIN:join(project,'tests','fake-investigator-execution.mjs'),TAKAVEN_SCRATCH_ROOT:join(tmp,'scratch')}});
+    assert.equal(result.status,0,result.stderr);
+    const report=JSON.parse(readFileSync(join(out,'report.json'),'utf8'));
+    assert.equal(report.runtime_status,'PASS');
+    assert.equal(report.runtime_evidence[0].status,'PASS');
+    assert.match(report.unverified.at(-1),/failed attempt/);
+    const evidence=JSON.parse(readFileSync(join(out,'evidence-registry.json'),'utf8'));
+    assert.equal(evidence.registry.records.some(record=>record.type==='runner_execution' && record.outcome==='passed'),true);
+    assert.equal(evidence.registry.records.some(record=>record.type==='model_runtime_contradiction' && record.outcome==='failed_attempt'),true);
+  } finally {rmSync(tmp,{recursive:true,force:true});}
+}
+
 test('controller integration scenarios', { concurrency: false }, () => {
   fullFlowScenario();
   dirtyWorkingTreeScenario();
   reportGuardScenario();
   investigationScenario();
+  executionHandoffScenario();
 });

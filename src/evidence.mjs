@@ -34,15 +34,23 @@ function stableJson(value) {
   return JSON.stringify(value);
 }
 
-export function createEvidenceRegistry({ source, commit } = {}) {
+export function createEvidenceRegistry({ source, commit, scenario = 'default', requiredChecks = [] } = {}) {
   if (typeof source !== 'string' || typeof commit !== 'string') throw new Error('Evidence registry requires source and commit');
-  return { version: 1, authority: 'trusted_controller', source, commit, records: [], ids: new Set() };
+  if (typeof scenario !== 'string' || scenario.length === 0 || !Array.isArray(requiredChecks)) throw new Error('Evidence registry requires a valid scenario and required checks');
+  return { version: 1, authority: 'trusted_controller', source, commit, scenario, required_checks: [...requiredChecks], records: [], ids: new Set() };
 }
 
 export function captureEvidence(registry, record) {
   if (!registry || registry.authority !== 'trusted_controller') throw new Error('Invalid evidence registry');
   if (!record || typeof record !== 'object' || Array.isArray(record)) throw new Error('Evidence record must be an object');
-  const payload = { ...sanitiseEvidenceValue(record), source: registry.source, commit: registry.commit };
+  const sanitised = sanitiseEvidenceValue(record);
+  const payload = {
+    ...sanitised,
+    source: registry.source,
+    commit: registry.commit,
+    scenario: registry.scenario,
+    patch_hash: registry.patch_hash ?? sanitised.patch_hash ?? null,
+  };
   const id = `ev-${createHash('sha256').update(stableJson(payload)).digest('hex').slice(0, 16)}`;
   if (registry.ids.has(id)) return id;
   const immutable = deepFreeze({ evidence_id: id, captured_by: 'trusted_controller', ...payload });
@@ -65,12 +73,14 @@ export function validateEvidenceIds(ids, registry, field = 'evidence_ids') {
   return ids;
 }
 
-export function isEligibleRuntimeEvidence(registry, id, { status, source, commit } = {}) {
+export function isEligibleRuntimeEvidence(registry, id, { status, source, commit, scenario = registry?.scenario, patchHash } = {}) {
   if (!hasEvidence(registry, id)) return false;
   const record = registry.records.find(item => item.evidence_id === id);
   if (!record || record.captured_by !== 'trusted_controller') return false;
   if (source !== undefined && record.source !== source) return false;
   if (commit !== undefined && record.commit !== commit) return false;
+  if (scenario !== undefined && record.scenario !== scenario) return false;
+  if (patchHash !== undefined && record.patch_hash !== patchHash) return false;
   if (!['executed_command', 'browser_execution', 'runner_execution'].includes(record.type)) return false;
   if (record.execution_verified !== true) return false;
   if (status === 'PASS') return record.outcome === 'passed' || record.exit_code === 0 || record.ui_passed === true;
@@ -85,6 +95,8 @@ export function serialiseEvidenceRegistry(registry, { includeInitialContent = tr
     authority: registry.authority,
     source: registry.source,
     commit: registry.commit,
+    scenario: registry.scenario,
+    required_checks: [...registry.required_checks],
     records: registry.records.map(record => {
       if (includeInitialContent || record.action !== 'initial_snapshot') return { ...record };
       const { content, ...metadata } = record;
@@ -100,6 +112,8 @@ export function evidenceRegistryIndex(registry) {
     authority: registry.authority,
     source: registry.source,
     commit: registry.commit,
+    scenario: registry.scenario,
+    required_checks: [...registry.required_checks],
     records: registry.records.map(record => ({
       evidence_id: record.evidence_id,
       type: record.type,
