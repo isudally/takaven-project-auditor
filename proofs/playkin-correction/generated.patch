@@ -2,7 +2,10 @@ diff --git a/src/design-tokens/theme.ts b/src/design-tokens/theme.ts
 index fa368d1..db3a0df 100644
 --- a/src/design-tokens/theme.ts
 +++ b/src/design-tokens/theme.ts
-@@ -39,0 +40,7 @@ export const typography = {
+@@ -37,6 +37,13 @@ export const typography = {
+     bold: '700' as const,
+     black: '800' as const,
+   },
 +  // System fonts are used because this revision does not bundle custom font assets.
 +  // Keep the named family tokens as part of the design-token contract used by screens.
 +  fontFamily: {
@@ -10,3 +13,6 @@ index fa368d1..db3a0df 100644
 +    medium: 'System',
 +    bold: 'System',
 +  },
+   // Line heights
+   lineHeight: {
+     tight: 1.2,
