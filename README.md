@@ -9,10 +9,12 @@
 - Codex CLI as the reasoning/execution engine (no custom model or paid agent service).
 - `inspect` (safe static review) and opt-in `verify` (tests/builds in a Codex sandbox).
 - Explicit evidence vs inference classification, negative controls where feasible, and NOT RUN/UNKNOWN outcomes.
+- Optional bounded investigative mode (`--investigate`) in which Codex may request additional source or imported evidence through a controller-validated registry. Correction execution requests are rejected; any proposed patch is advisory report data only.
+- Optional owner-supplied project brief (`--brief`) containing purpose, intended users, workflows, objectives and constraints. Missing context remains UNKNOWN rather than becoming an invented requirement.
 - Machine-readable `report.json` and readable `report.md`.
 - Ready-made hostile-documentation and clean-control fixtures for evaluation.
 
-**Status:** The bounded static-audit path is implemented and has been exercised against clean, hostile and real-project snapshots. Inspect mode reads controller-selected source evidence, validates model reports, records coverage and keeps runtime status `NOT RUN`. Runtime verification is not implemented as a secure execution capability yet; `verify` remains an opt-in orchestration path whose command execution depends on external isolation and policy controls.
+**Status:** The bounded static-audit path and the controller-mediated evidence-request loop are implemented and tested against clean, hostile and real-project snapshots. Inspect mode reads controller-selected source evidence, validates coverage and evidence IDs, and keeps runtime status `NOT RUN`. The investigative loop can retrieve bounded source and previously captured runtime evidence, and can request approved diagnostic experiments through an explicitly configured runner. Correction requests are rejected and proposed patches remain advisory; a separate implementation workflow owns changes. Runtime claims require runner configuration; a static or inspect-only invocation cannot claim execution.
 
 ### Work package 1 status
 
@@ -33,8 +35,14 @@ codex login
 # Static audit; does NOT run target project's own code
 node src/audit.mjs --repo https://github.com/isudally/playkin --mode inspect --out ./reports/playkin
 
-# Deeper audit, when you trust the repository and run on an isolated computer
-node src/audit.mjs --repo https://github.com/isudally/playkin --mode verify --out ./reports/playkin-verified
+# Bounded investigation using controller-mediated source/evidence requests
+node src/audit.mjs --repo https://github.com/isudally/playkin --mode inspect --investigate --evidence ./controller-evidence.json --out ./reports/playkin-investigation
+
+# Product context supplied separately; provenance is controller-selected and defaults to unspecified
+node src/audit.mjs --path /path/to/project --brief ./project-brief.json --brief-provenance owner-confirmed --mode inspect --investigate --out ./reports/project
+
+# Deeper audit, only with an explicit approved runner configuration and an isolated computer
+node src/audit.mjs --repo https://github.com/isudally/playkin --mode verify --runner-config ./runner-config.json --out ./reports/playkin-verified
 
 # A local Git repository also works
 node src/audit.mjs --path /path/to/project --mode inspect --out ./reports/myproject
@@ -42,7 +50,8 @@ node src/audit.mjs --path /path/to/project --mode inspect --out ./reports/myproj
 
 ### Security
 
-- `verify` may execute scripts from the target project. **Use a disposable VM/container with no production credentials and no access to sensitive user data.** Codex's workspace sandbox is useful, but not a replacement for hardened isolation.
+- `verify` may execute scripts from the target project through the explicitly supplied approved runner. **Use a disposable VM/container with no production credentials and no access to sensitive user data.** Codex's workspace sandbox is useful, but not a replacement for hardened isolation.
+- `--brief` is contextual input, not authority. Use `--brief-provenance owner-confirmed` only when the controller has independently received that owner confirmation; use `repository-derived` for briefs assembled from repository documentation; omit the flag when provenance is not established. The brief JSON cannot self-declare owner authority.
 - The `verify` mode deliberately disables direct network access within the default Codex workspace sandbox. Dependency downloads may therefore be blocked; these must be reported as NOT RUN, not PASS. Do not relax sandboxing merely to obtain a green result.
 - Authentication belongs to Codex CLI; no model keys are written to this project.
 - Never run verification on an unknown, untrusted public repository on a machine carrying secrets.
@@ -61,8 +70,8 @@ Compare claims against known outcomes. Track **false-confidence rate**, evidence
 
 ## Next steps
 
-1. Prove one isolated runtime-execution workflow with credential-free tooling and independently captured command results.
+1. Keep diagnostic runtime checks credential-free and independently captured; do not use TAKAVEN to apply proposed repairs.
 2. Keep inspect-mode findings separate from runtime observations and treat any unavailable runtime checks as `NOT RUN`.
-3. Reassess the wrapper after the runtime proof; do not add services or automation without evidence of need.
+3. Compare the auditor with a properly briefed direct Codex review before adding services or automation.
 
 **Out of scope:** autonomous coding, production changes, multi-agent hierarchy, dashboards, self-hosted model serving and payment/billing services.

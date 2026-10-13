@@ -22,8 +22,10 @@ function fullFlowScenario(){
   const tmp=makeTemp('auditor-wrapper-test');
   try{
     const source=initFixture(tmp);
+    const brief=join(tmp,'brief.json');
+    writeFileSync(brief,JSON.stringify({purpose:'Fixture product.',intended_users:['Testers'],major_workflows:['Review'],business_objectives:['Evidence'],constraints:['Read only']}));
     const out=join(tmp,'report');
-    const result=run(process.execPath,[join(project,'src','audit.mjs'),'--path',source,'--ref','main','--mode','inspect','--out',out],{env:{...process.env,TAKAVEN_CODEX_BIN:join(project,'tests','fake-codex.mjs'),TAKAVEN_SCRATCH_ROOT:join(tmp,'scratch')}});
+    const result=run(process.execPath,[join(project,'src','audit.mjs'),'--path',source,'--ref','main','--brief',brief,'--brief-provenance','repository-derived','--mode','inspect','--out',out],{env:{...process.env,TAKAVEN_CODEX_BIN:join(project,'tests','fake-codex.mjs'),TAKAVEN_SCRATCH_ROOT:join(tmp,'scratch')}});
     assert.equal(result.status,0, result.stderr);
     assert.equal(existsSync(join(out,'report.md')),true);
     assert.match(readFileSync(join(out,'report.md'),'utf8'),/Synthetic output from contract test/);
@@ -31,6 +33,10 @@ function fullFlowScenario(){
     assert.equal(report.project,'source');
     assert.notEqual(report.commit,'fake-model-commit');
     assert.equal(report.audit_mode,'inspect');
+    const metadata=JSON.parse(readFileSync(join(out,'audit-metadata.json'),'utf8'));
+    assert.equal(metadata.brief_provenance,'repository-derived');
+    const evidence=JSON.parse(readFileSync(join(out,'evidence-registry.json'),'utf8'));
+    assert.equal(evidence.registry.brief_provenance,'repository-derived');
     assert.equal(existsSync(join(source,'report.md')),false);
     const sourceLog=run('git',['-C',source,'status','--porcelain']);
     assert.equal(sourceLog.stdout.trim(),'');
@@ -61,8 +67,83 @@ function reportGuardScenario(){
   }finally{rmSync(tmp,{recursive:true,force:true});}
 }
 
+function investigationScenario(){
+  const tmp=makeTemp('auditor-investigation-test');
+  try{
+    const source=initFixture(tmp);
+    const out=join(tmp,'report');
+    const result=run(process.execPath,[join(project,'src','audit.mjs'),'--path',source,'--mode','inspect','--investigate','--out',out],{env:{...process.env,TAKAVEN_CODEX_BIN:join(project,'tests','fake-investigator.mjs'),TAKAVEN_SCRATCH_ROOT:join(tmp,'scratch')}});
+    assert.equal(result.status,0,result.stderr);
+    const report=JSON.parse(readFileSync(join(out,'report.json'),'utf8'));
+    assert.equal(report.findings[0].evidence_ids.length,1);
+    assert.equal(report.coverage.follow_up_read_files.includes('app.mjs'),true);
+    assert.equal(report.coverage.bytes_examined > report.coverage.initial_bytes_examined,true);
+    const evidence=JSON.parse(readFileSync(join(out,'evidence-registry.json'),'utf8'));
+    assert.equal(evidence.investigation.length >= 1,true);
+    assert.equal(evidence.registry.records.some(record=>record.type==='source' && record.action==='source_read'),true);
+  } finally {rmSync(tmp,{recursive:true,force:true});}
+}
+
+function malformedFinalPatchScenario(){
+  const tmp=makeTemp('auditor-malformed-final-patch-test');
+  try{
+    const source=initFixture(tmp);
+    const out=join(tmp,'report');
+    const result=run(process.execPath,[join(project,'src','audit.mjs'),'--path',source,'--mode','inspect','--investigate','--out',out],{env:{...process.env,TAKAVEN_CODEX_BIN:join(project,'tests','fake-investigator-malformed-report.mjs'),TAKAVEN_SCRATCH_ROOT:join(tmp,'scratch')}});
+    assert.equal(result.status,0,result.stderr);
+    const report=JSON.parse(readFileSync(join(out,'report.json'),'utf8'));
+    assert.equal(report.proposed_patch,null);
+    assert.match(report.unverified.at(-1),/Correction remains unverified/);
+    const evidence=JSON.parse(readFileSync(join(out,'evidence-registry.json'),'utf8'));
+    assert.equal(evidence.registry.records.some(record=>record.type==='model_report' && record.outcome==='failed_validation'),true);
+    assert.equal(evidence.registry.records.some(record=>record.type==='controller_validation' && record.outcome==='retry_requested'),true);
+  } finally {rmSync(tmp,{recursive:true,force:true});}
+}
+
+function malformedCorrectionRetryScenario(){
+  const tmp=makeTemp('auditor-malformed-correction-retry-test');
+  try{
+    const source=initFixture(tmp);
+    const config=join(tmp,'runner.json');
+    writeFileSync(config, JSON.stringify({version:1,scenario:'correction-retry',required_checks:['build'],build:{command:['node','-e','process.stdout.write("build")']}}));
+    const out=join(tmp,'report');
+    const result=run(process.execPath,[join(project,'src','audit.mjs'),'--path',source,'--mode','verify','--investigate','--runner-config',config,'--out',out],{env:{...process.env,TAKAVEN_CODEX_BIN:join(project,'tests','fake-investigator-correction-retry.mjs'),TAKAVEN_SCRATCH_ROOT:join(tmp,'scratch')}});
+    assert.equal(result.status,0,result.stderr);
+    const report=JSON.parse(readFileSync(join(out,'report.json'),'utf8'));
+    assert.equal(report.runtime_status,'PASS');
+    const evidence=JSON.parse(readFileSync(join(out,'evidence-registry.json'),'utf8'));
+    assert.equal(evidence.registry.records.some(record=>record.type==='model_request' && record.outcome==='failed_validation'),true);
+    assert.equal(evidence.registry.records.some(record=>record.type==='controller_validation' && record.action==='policy_gate' && record.outcome==='rejected'),true);
+    assert.equal(evidence.registry.records.some(record=>record.type==='runner_execution' && record.operation==='correction_verification'),false);
+    assert.equal(run('git',['-C',source,'status','--porcelain']).stdout.trim(),'');
+  } finally {rmSync(tmp,{recursive:true,force:true});}
+}
+
+function executionHandoffScenario(){
+  const tmp=makeTemp('auditor-execution-handoff-test');
+  try{
+    const source=initFixture(tmp);
+    const config=join(tmp,'runner.json');
+    writeFileSync(config, JSON.stringify({version:1,scenario:'fixture-build',required_checks:['build'],build:{command:['node','-e','process.stdout.write("controller-build")']}}));
+    const out=join(tmp,'report');
+    const result=run(process.execPath,[join(project,'src','audit.mjs'),'--path',source,'--mode','verify','--investigate','--runner-config',config,'--out',out],{env:{...process.env,TAKAVEN_CODEX_BIN:join(project,'tests','fake-investigator-execution.mjs'),TAKAVEN_SCRATCH_ROOT:join(tmp,'scratch')}});
+    assert.equal(result.status,0,result.stderr);
+    const report=JSON.parse(readFileSync(join(out,'report.json'),'utf8'));
+    assert.equal(report.runtime_status,'PASS');
+    assert.equal(report.runtime_evidence[0].status,'PASS');
+    assert.match(report.unverified.at(-1),/failed attempt/);
+    const evidence=JSON.parse(readFileSync(join(out,'evidence-registry.json'),'utf8'));
+    assert.equal(evidence.registry.records.some(record=>record.type==='runner_execution' && record.outcome==='passed'),true);
+    assert.equal(evidence.registry.records.some(record=>record.type==='model_runtime_contradiction' && record.outcome==='failed_attempt'),true);
+  } finally {rmSync(tmp,{recursive:true,force:true});}
+}
+
 test('controller integration scenarios', { concurrency: false }, () => {
   fullFlowScenario();
   dirtyWorkingTreeScenario();
   reportGuardScenario();
+  investigationScenario();
+  malformedFinalPatchScenario();
+  malformedCorrectionRetryScenario();
+  executionHandoffScenario();
 });

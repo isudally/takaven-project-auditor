@@ -1,5 +1,7 @@
-name: Runtime proof
+name: Controller runtime proof (not a normal V3 audit)
 
+# This workflow is a deterministic controller/runner regression proof. It does
+# not invoke Codex and must not be presented as evidence of model-led auditing.
 on:
   workflow_dispatch:
 
@@ -8,7 +10,7 @@ permissions:
 
 jobs:
   fixtures:
-    name: Execute trusted fixtures and record evidence
+    name: Execute trusted fixtures and record controller evidence
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -78,6 +80,7 @@ jobs:
             'runtime-proof/evidence/summary.json',
             JSON.stringify({
               controller: 'github-actions-runner',
+              classification: 'controller_test_not_ai_audit',
               github_sha: process.env.GITHUB_SHA,
               captured_at: new Date().toISOString(),
               evidence,
@@ -156,6 +159,7 @@ jobs:
               auditedAt: new Date().toISOString(),
               coverage: {
                 authority: 'github-actions-controller',
+                classification: 'controller_test_not_ai_audit',
                 evidence_file: `runtime-proof/evidence/${evidence.fixture}.json`,
                 command_output_captured: true,
               },
@@ -180,7 +184,7 @@ jobs:
           retention-days: 14
 
   playkin-browser:
-    name: Browser smoke test approved Playkin revision
+    name: Browser smoke test approved Playkin revision (controller proof only)
     needs: fixtures
     if: success()
     runs-on: ubuntu-24.04
@@ -250,11 +254,23 @@ jobs:
           page.on('pageerror', error => pageErrors.push(String(error)));
           let response;
           let navigationError = null;
+          let interaction = null;
+          let interactionError = null;
+          let uiRendered = false;
+          let interactiveElementCount = 0;
           try {
             response = await page.goto('http://127.0.0.1:4173/', { waitUntil: 'networkidle', timeout: 60000 });
             await page.screenshot({ path: 'runtime-proof/playkin/playkin.png', fullPage: true });
+            uiRendered = await page.locator('#root').evaluate(element => Boolean(element?.textContent?.trim()));
+            interactiveElementCount = await page.locator('button').count();
+            if (uiRendered && pageErrors.length === 0) {
+              await page.getByRole('button', { name: 'Get Started' }).click({ timeout: 10000 });
+              await page.getByText('What do you want to build?', { exact: false }).waitFor({ state: 'visible', timeout: 10000 });
+              interaction = { action: 'click Get Started', expected_next_text: 'What do you want to build?', passed: true };
+            }
           } catch (error) {
-            navigationError = String(error);
+            if (!response) navigationError = String(error);
+            else interactionError = String(error);
           }
           const result = {
             repository: 'isudally/playkin',
@@ -268,6 +284,10 @@ jobs:
             console_errors: consoleErrors,
             page_errors: pageErrors,
             navigation_error: navigationError,
+            interaction,
+            interaction_error: interactionError,
+            ui_rendered: uiRendered,
+            interactive_element_count: interactiveElementCount,
             screenshot: 'runtime-proof/playkin/playkin.png',
             browser: 'Chromium 1.52.0',
           };
@@ -284,7 +304,7 @@ jobs:
           import { applyTrustedMetadata, renderMarkdown, validateReport } from './src/core.mjs';
 
           const evidence = JSON.parse(readFileSync('runtime-proof/playkin/smoke.json', 'utf8'));
-          const failed = !evidence.http_ok || evidence.page_errors.length > 0 || evidence.navigation_error;
+          const failed = !evidence.http_ok || evidence.page_errors.length > 0 || evidence.navigation_error || !evidence.ui_rendered || !evidence.interaction?.passed;
           const report = validateReport({
             project: 'playkin',
             commit: 'controller-owned-placeholder',
@@ -325,6 +345,7 @@ jobs:
             auditedAt: new Date().toISOString(),
             coverage: {
               authority: 'github-actions-controller',
+              classification: 'controller_test_not_ai_audit',
               evidence_file: 'runtime-proof/playkin/smoke.json',
               screenshot_file: 'runtime-proof/playkin/playkin.png',
             },
