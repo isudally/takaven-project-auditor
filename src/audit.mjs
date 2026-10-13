@@ -237,6 +237,7 @@ export function buildCodexArgs({ mode, schema, responsePath }) {
   return [
     'exec',
     '--sandbox', mode === 'inspect' ? 'read-only' : 'workspace-write',
+    '--ephemeral',
     '--ignore-user-config',
     '--ignore-rules',
     '--skip-git-repo-check',

@@ -126,6 +126,30 @@ test('runner applies corrections in a disposable checkout and requires configure
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
+test('correction verification executes and requires a configured declared test', () => {
+  const scratch = mkdtempSync(join(process.cwd(), 'runner-correction-test-'));
+  try {
+    initGitCheckout(scratch);
+    const controllerScratch = join(scratch, 'controller');
+    mkdirSync(controllerScratch);
+    const registry = createEvidenceRegistry({ source: 'fixture', commit: 'abc', requiredChecks: ['build', 'declared_test'] });
+    const runner = createApprovedRunner({
+      config: {
+        version: 1,
+        required_checks: ['build', 'declared_test'],
+        build: { command: ['node', '-e', 'process.exit(0)'] },
+        declared_test: { command: ['node', '-e', "const text=require('fs').readFileSync('app.mjs','utf8'); process.exit(text.includes('broken = false') ? 0 : 1)"] },
+      },
+      registry, scratch: controllerScratch, timeoutMs: 10000,
+    });
+    const patch = 'diff --git a/app.mjs b/app.mjs\n--- a/app.mjs\n+++ b/app.mjs\n@@ -1 +1 @@\n-export const broken = true;\n+export const broken = false;\n';
+    const result = runner({ operation: 'correction_verification', checkout: scratch, patch });
+    assert.equal(result.outcome, 'passed', JSON.stringify(registry.records, null, 2));
+    assert.ok(result.declared_test_evidence_id);
+    assert.equal(registry.records.find(record => record.evidence_id === result.declared_test_evidence_id).outcome, 'passed');
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
 test('runner cannot call a correction verified when a required browser check is missing', () => {
   const scratch = mkdtempSync(join(process.cwd(), 'runner-correction-gate-'));
   try {

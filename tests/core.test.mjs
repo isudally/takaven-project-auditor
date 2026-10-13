@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs, normalizeGithub, validateGitRef, validateReport, renderMarkdown, promptForRun, applyTrustedMetadata } from '../src/core.mjs';
-import { resolveCodexCommand } from '../src/audit.mjs';
+import { buildCodexArgs, resolveCodexCommand } from '../src/audit.mjs';
 import { createEvidenceRegistry, captureEvidence, redactEvidenceText } from '../src/evidence.mjs';
 
 const sample = {project:'demo',commit:'123',verdict:'MODIFY',executive_summary:'Build is broken.',runtime_status:'FAIL',runtime_evidence:[{check:'web boot',status:'FAIL',command:'npm test',observation:'TypeError',negative_control:'not required'}],findings:[{title:'Boot fails',severity:'HIGH',evidence_type:'OBSERVED',evidence:'startup exception',location:'src/app.js:10',recommended_fix:'fix token'}],reuse_assessment:['reuse templates'],commercial_risks:['no buyer evidence'],unverified:['sales'],next_actions:['fix boot']};
@@ -13,6 +13,7 @@ test('requires one repo source',()=> {assert.throws(()=>parseArgs([]),/exactly o
 test('supports exact HTTPS github repo',()=>assert.equal(normalizeGithub('https://github.com/isudally/playkin'), 'https://github.com/isudally/playkin.git'));
 test('rejects credentials, unexpected domains and extra GitHub paths',()=>{for(const url of ['https://evil.com/a/b','https://u:p@github.com/a/b','https://github.com/a/b/tree/main','http://github.com/a/b','https://github.com/a/b?x=1']) assert.throws(()=>normalizeGithub(url));});
 test('modes limited to inspect and verify',()=>{assert.equal(parseArgs(['--repo','https://github.com/a/b']).mode,'inspect');assert.throws(()=>parseArgs(['--repo','https://github.com/a/b','--mode','danger']),/must be/);assert.throws(()=>parseArgs(['--repo','https://github.com/a/b','--mode','verify']),/runner-config/);});
+test('Codex automation uses an ephemeral session under the controller sandbox',()=>assert.ok(buildCodexArgs({mode:'inspect',schema:'schema.json',responsePath:'response.json'}).includes('--ephemeral')));
 test('accepts safe Git references and rejects option-like or malformed references',()=>{
   assert.equal(validateGitRef('refs/heads/feature/a'), 'refs/heads/feature/a');
   assert.equal(parseArgs(['--repo','https://github.com/a/b','--ref','v1.2.3']).ref, 'v1.2.3');

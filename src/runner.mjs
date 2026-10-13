@@ -245,6 +245,7 @@ function requiredCorrectionChecksPassed(config, results, registry) {
   const checks = new Map([
     ['setup', results.setup],
     ['build', results.build],
+    ['declared_test', results.declaredTest],
     ['browser_smoke', results.browser],
   ]);
   if (results.browser?.server_evidence_id) {
@@ -290,18 +291,20 @@ function applyAndVerifyPatch({ patch, checkout, config, registry, timeoutMs, scr
   const setup = config.setup ? runCommand({ operation: 'correction_setup', spec: config.setup, checkout: correctionCheckout, registry, timeoutMs }) : null;
   const build = config.build && (!setup || setup.outcome === 'passed')
     ? runCommand({ operation: 'correction_build', spec: config.build, checkout: correctionCheckout, registry, timeoutMs }) : null;
+  const declaredTest = config.declared_test && (!setup || setup.outcome === 'passed') && (!build || build.outcome === 'passed')
+    ? runCommand({ operation: 'correction_declared_test', spec: config.declared_test, checkout: correctionCheckout, registry, timeoutMs }) : null;
   const browser = config.browser_smoke && build?.outcome === 'passed'
     ? runBrowserSmoke({ spec: config.browser_smoke, checkout: correctionCheckout, registry, timeoutMs }) : null;
-  const passed = requiredCorrectionChecksPassed(config, { setup, build, browser }, registry);
+  const passed = requiredCorrectionChecksPassed(config, { setup, build, declaredTest, browser }, registry);
   const evidenceId = captureEvidence(registry, {
     type: 'runner_execution', action: 'correction_verification', operation: 'correction_verification',
     patch_hash: patchHash, patch, applied_diff: appliedDiff, applied_diff_hash: sha256(appliedDiff),
-    setup_evidence_id: setup?.evidence_id ?? null, build_evidence_id: build?.evidence_id ?? null,
+    setup_evidence_id: setup?.evidence_id ?? null, build_evidence_id: build?.evidence_id ?? null, declared_test_evidence_id: declaredTest?.evidence_id ?? null,
     server_evidence_id: browser?.server_evidence_id ?? null, browser_evidence_id: browser?.evidence_id ?? null,
     outcome: passed ? 'passed' : 'failed',
     execution_verified: true, exit_code: passed ? 0 : 1,
   });
-  return { evidence_id: evidenceId, outcome: passed ? 'passed' : 'failed', exit_code: passed ? 0 : 1, patch_hash: patchHash, applied_diff_hash: sha256(appliedDiff), setup_evidence_id: setup?.evidence_id, build_evidence_id: build?.evidence_id, server_evidence_id: browser?.server_evidence_id, browser_evidence_id: browser?.evidence_id };
+  return { evidence_id: evidenceId, outcome: passed ? 'passed' : 'failed', exit_code: passed ? 0 : 1, patch_hash: patchHash, applied_diff_hash: sha256(appliedDiff), setup_evidence_id: setup?.evidence_id, build_evidence_id: build?.evidence_id, declared_test_evidence_id: declaredTest?.evidence_id, server_evidence_id: browser?.server_evidence_id, browser_evidence_id: browser?.evidence_id };
 }
 
 function validateConfig(config) {
