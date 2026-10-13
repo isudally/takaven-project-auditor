@@ -1,4 +1,4 @@
-import { isEligibleRuntimeEvidence, hasEvidence } from './evidence.mjs';
+import { isEligibleRuntimeEvidence } from './evidence.mjs';
 
 const EXECUTION_TYPES = new Set(['executed_command', 'browser_execution', 'runner_execution']);
 
@@ -32,19 +32,14 @@ export function deriveRuntimeResults(registry, { modelRuntimeStatus = 'NOT RUN',
     && statusForRecord(registry, record));
 
   const modelEntries = Array.isArray(modelRuntimeEvidence) ? modelRuntimeEvidence : [];
-  const modelById = new Map();
-  for (const entry of modelEntries) for (const id of entry.evidence_ids ?? []) {
-    if (hasEvidence(registry, id)) modelById.set(id, entry);
-  }
 
   const derived = eligible.map(record => {
-    const modelEntry = modelById.get(record.evidence_id) ?? modelEntries.find(entry => entry.check === checkName(record));
     return {
-      check: modelEntry?.check ?? checkName(record),
+      check: checkName(record),
       status: statusForRecord(registry, record),
-      command: modelEntry?.command ?? record.command ?? `controller operation ${checkName(record)}`,
-      observation: modelEntry?.observation ?? observationFor(record),
-      negative_control: modelEntry?.negative_control ?? 'Controller-derived result; model claims are not execution evidence.',
+      command: record.command ?? `controller operation ${checkName(record)}`,
+      observation: observationFor(record),
+      negative_control: record.negative_control ?? 'Controller-derived result; model claims are not execution evidence.',
       evidence_ids: [record.evidence_id],
     };
   });
