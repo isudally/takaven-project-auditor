@@ -34,10 +34,11 @@ function stableJson(value) {
   return JSON.stringify(value);
 }
 
-export function createEvidenceRegistry({ source, commit, scenario = 'default', requiredChecks = [] } = {}) {
+export function createEvidenceRegistry({ source, commit, scenario = 'default', requiredChecks = [], briefProvenance = 'unspecified' } = {}) {
   if (typeof source !== 'string' || typeof commit !== 'string') throw new Error('Evidence registry requires source and commit');
   if (typeof scenario !== 'string' || scenario.length === 0 || !Array.isArray(requiredChecks)) throw new Error('Evidence registry requires a valid scenario and required checks');
-  return { version: 1, authority: 'trusted_controller', source, commit, scenario, required_checks: [...requiredChecks], records: [], ids: new Set() };
+  if (!['owner-confirmed', 'repository-derived', 'unspecified'].includes(briefProvenance)) throw new Error('Evidence registry requires a valid brief provenance');
+  return { version: 1, authority: 'trusted_controller', source, commit, scenario, brief_provenance: briefProvenance, required_checks: [...requiredChecks], records: [], ids: new Set() };
 }
 
 export function captureEvidence(registry, record) {
@@ -96,6 +97,7 @@ export function serialiseEvidenceRegistry(registry, { includeInitialContent = tr
     source: registry.source,
     commit: registry.commit,
     scenario: registry.scenario,
+    brief_provenance: registry.brief_provenance,
     required_checks: [...registry.required_checks],
     records: registry.records.map(record => {
       if (includeInitialContent || record.action !== 'initial_snapshot') return { ...record };
@@ -113,6 +115,7 @@ export function evidenceRegistryIndex(registry) {
     source: registry.source,
     commit: registry.commit,
     scenario: registry.scenario,
+    brief_provenance: registry.brief_provenance,
     required_checks: [...registry.required_checks],
     records: registry.records.map(record => ({
       evidence_id: record.evidence_id,

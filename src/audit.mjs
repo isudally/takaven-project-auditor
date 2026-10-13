@@ -12,7 +12,7 @@ import { createApprovedRunner, loadRunnerConfig } from './runner.mjs';
 import { applyControllerRuntimeResults } from './runtime.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const help = `TAKAVEN Project Auditor v0.1\n\nUsage:\n  node src/audit.mjs --repo https://github.com/owner/repo [--ref main] [--brief ./project-brief.json] [--mode inspect|verify] [--out ./reports/project]\n  node src/audit.mjs --path /path/to/local/git/repo [--brief ./project-brief.json] [--mode inspect|verify]\n\nModes:\n  inspect (default): code and architecture only; never executes repository code\n  verify: execute tests/builds where feasible in a disposable copy, with Codex sandbox enabled\n\nPrerequisites: Git, Node.js >=20, Codex CLI installed and authenticated.\n\nCAUTION: The verify mode may execute repository scripts. Use only with code you trust, preferably in a separate VM/container with no production secrets. The Codex sandbox is not a substitute for a dedicated security boundary.`;
+const help = `TAKAVEN Project Auditor v0.1\n\nUsage:\n  node src/audit.mjs --repo https://github.com/owner/repo [--ref main] [--brief ./project-brief.json] [--brief-provenance unspecified|owner-confirmed|repository-derived] [--mode inspect|verify] [--out ./reports/project]\n  node src/audit.mjs --path /path/to/local/git/repo [--brief ./project-brief.json] [--brief-provenance unspecified|owner-confirmed|repository-derived] [--mode inspect|verify]\n\nModes:\n  inspect (default): code and architecture only; never executes repository code\n  verify: execute tests/builds where feasible in a disposable copy, with Codex sandbox enabled\n\nBrief provenance is controller-selected metadata. The brief JSON cannot self-declare owner authority; omitted provenance is unspecified.\n\nPrerequisites: Git, Node.js >=20, Codex CLI installed and authenticated.\n\nCAUTION: The verify mode may execute repository scripts. Use only with code you trust, preferably in a separate VM/container with no production secrets. The Codex sandbox is not a substitute for a dedicated security boundary.`;
 
 function command(file, args, options={}) {
   const result=spawnSync(file,args,{encoding:'utf8',timeout:options.timeout??60000,cwd:options.cwd,env:process.env,stdio:['ignore','pipe','pipe']});
@@ -377,7 +377,7 @@ function finalInvestigationPrompt(basePrompt, registry, history, feedback = null
 # FINAL INVESTIGATION REPORT
 The controller has completed the bounded evidence-request loop. Return only the normal report JSON matching report.schema.json. Every OBSERVED or INFERRED finding and every executed runtime evidence entry must reference one or more valid controller evidence_ids from the registry below. UNKNOWN findings may explain what remains unresolved but must not claim verification. Do not claim a patch was applied or verified unless the registry contains evidence of that execution. If the registry contains a trusted_controller record with execution_verified=true, classify its corresponding runtime result as PASS, FAIL or PARTIAL according to the recorded outcome; do not relabel executed evidence as NOT RUN. Use NOT RUN only when no approved execution occurred.
 
-If you return a proposed correction, proposed_patch must be a non-empty safe unified diff and is advisory report data only; the controller never applies it. Findings may be valid static observations without a patch; classify uncertainty explicitly and never imply that an unexecuted recommendation is a verified correction. Include product_assessment when evidence supports it, with strengths, specific opportunities and reuse-or-simplify recommendations; every item must cite controller evidence IDs. If the owner brief or evidence is insufficient, use UNKNOWN or an empty list rather than inventing requirements.
+If you return a proposed correction, proposed_patch must be a non-empty safe unified diff and is advisory report data only; the controller never applies it. Findings may be valid static observations without a patch; classify uncertainty explicitly and never imply that an unexecuted recommendation is a verified correction. Include product_assessment when evidence supports it, with strengths, specific opportunities and reuse-or-simplify recommendations; every item must cite controller evidence IDs. Each opportunity must include classification "defect_remediation", "independent_enhancement" or "validation_readiness" when justified; do not force any category or minimum count, and treat omitted legacy classification as unspecified. If the owner brief or evidence is insufficient, use UNKNOWN or an empty list rather than inventing requirements.
 
 Controller evidence registry:
 ${JSON.stringify(serialiseEvidenceRegistry(registry, { includeInitialContent: false }))}
@@ -585,13 +585,13 @@ async function main(){
     const mission=readFileSync(join(root,'prompts','audit.md'),'utf8');
     const snapshot=collectRepositorySnapshot(checkout);
     const runnerConfig = args.runnerConfig ? loadRunnerConfig(args.runnerConfig) : null;
-    registry = createEvidenceRegistry({ source: originalSource, commit, scenario: runnerConfig?.scenario ?? 'default', requiredChecks: runnerConfig?.required_checks ?? [] });
+    registry = createEvidenceRegistry({ source: originalSource, commit, scenario: runnerConfig?.scenario ?? 'default', requiredChecks: runnerConfig?.required_checks ?? [], briefProvenance: args.briefProvenance });
     captureInitialSourceEvidence(snapshot, registry);
     if (args.evidence) captureImportedEvidence(args.evidence, registry);
     const runner = runnerConfig ? createApprovedRunner({ config: runnerConfig, registry, scratch, timeoutMs: configuredTimeout() }) : undefined;
     let coverage = { ...snapshot.coverage, working_tree: workingTree };
     const brief = args.brief ? readProjectBrief(args.brief) : null;
-    const prompt=promptForRun({projectName:name,commit,mode:args.mode,contract,mission,targetPath:checkout,brief,snapshot:{ ...snapshot, coverage, evidence_registry: evidenceRegistryIndex(registry) }});
+    const prompt=promptForRun({projectName:name,commit,mode:args.mode,contract,mission,targetPath:checkout,brief,briefProvenance: args.briefProvenance,snapshot:{ ...snapshot, coverage, evidence_registry: evidenceRegistryIndex(registry) }});
     const schema=join(root,'report.schema.json');
     console.log(`Auditing ${name} at ${commit.slice(0,12)} [${args.mode}]...`);
     let modelReport;
@@ -627,10 +627,10 @@ async function main(){
     // Verify mode changes are never pushed and never leave the disposable workspace.
     mkdirSync(output,{recursive:true});
     writeFileSync(join(output,'report.json'),JSON.stringify(report,null,2)+'\n',{mode:0o600});
-    writeFileSync(join(output,'report.md'),renderMarkdown(report,{source:originalSource,mode:args.mode,timestamp:new Date().toISOString()}),{mode:0o600});
+    writeFileSync(join(output,'report.md'),renderMarkdown(report,{source:originalSource,mode:args.mode,briefProvenance:args.briefProvenance,timestamp:new Date().toISOString()}),{mode:0o600});
     const originalUntouched = !args.path || inspectLocalWorkingTree(args.path).status_fingerprint === workingTree.status_fingerprint;
     if (!originalUntouched) throw new Error('Original project changed during audit; refusing to report it as untouched');
-    writeFileSync(join(output,'audit-metadata.json'),JSON.stringify({source:originalSource,commit,mode:args.mode,coverage,createdAt:new Date().toISOString(),originalUntouched},null,2)+'\n');
+    writeFileSync(join(output,'audit-metadata.json'),JSON.stringify({source:originalSource,commit,mode:args.mode,brief_provenance:args.briefProvenance,coverage,createdAt:new Date().toISOString(),originalUntouched},null,2)+'\n');
     writeFileSync(join(output,'evidence-registry.json'),JSON.stringify({registry:serialiseEvidenceRegistry(registry),investigation:investigationHistory},null,2)+'\n',{mode:0o600});
     success=true;
     console.log(`Audit complete: ${output}/report.md\nVerdict: ${report.verdict} | Runtime: ${report.runtime_status}`);

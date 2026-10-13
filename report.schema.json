@@ -51,6 +51,7 @@
           "type": "object",
           "properties": {
             "title": {"type": "string"}, "category": {"type": "string", "enum": ["product", "ux", "technical", "security", "reuse"]},
+            "classification": {"type": "string", "enum": ["defect_remediation", "independent_enhancement", "validation_readiness", "unspecified"], "description": "Classify the opportunity's basis; legacy reports may omit this field and are rendered as unspecified."},
             "priority": {"type": "string", "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"]}, "rationale": {"type": "string"},
             "impact": {"type": "string"}, "effort": {"type": "string"}, "acceptance_criteria": {"type": "string"},
             "evidence_ids": {"type": "array", "items": {"type": "string", "pattern": "^ev-[a-f0-9]{16}$"}, "minItems": 1}

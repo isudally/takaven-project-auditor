@@ -38,8 +38,8 @@ node src/audit.mjs --repo https://github.com/isudally/playkin --mode inspect --o
 # Bounded investigation using controller-mediated source/evidence requests
 node src/audit.mjs --repo https://github.com/isudally/playkin --mode inspect --investigate --evidence ./controller-evidence.json --out ./reports/playkin-investigation
 
-# Product context supplied separately by the owner; it is not repository instructions
-node src/audit.mjs --path /path/to/project --brief ./project-brief.json --mode inspect --investigate --out ./reports/project
+# Product context supplied separately; provenance is controller-selected and defaults to unspecified
+node src/audit.mjs --path /path/to/project --brief ./project-brief.json --brief-provenance owner-confirmed --mode inspect --investigate --out ./reports/project
 
 # Deeper audit, only with an explicit approved runner configuration and an isolated computer
 node src/audit.mjs --repo https://github.com/isudally/playkin --mode verify --runner-config ./runner-config.json --out ./reports/playkin-verified
@@ -51,6 +51,7 @@ node src/audit.mjs --path /path/to/project --mode inspect --out ./reports/myproj
 ### Security
 
 - `verify` may execute scripts from the target project through the explicitly supplied approved runner. **Use a disposable VM/container with no production credentials and no access to sensitive user data.** Codex's workspace sandbox is useful, but not a replacement for hardened isolation.
+- `--brief` is contextual input, not authority. Use `--brief-provenance owner-confirmed` only when the controller has independently received that owner confirmation; use `repository-derived` for briefs assembled from repository documentation; omit the flag when provenance is not established. The brief JSON cannot self-declare owner authority.
 - The `verify` mode deliberately disables direct network access within the default Codex workspace sandbox. Dependency downloads may therefore be blocked; these must be reported as NOT RUN, not PASS. Do not relax sandboxing merely to obtain a green result.
 - Authentication belongs to Codex CLI; no model keys are written to this project.
 - Never run verification on an unknown, untrusted public repository on a machine carrying secrets.

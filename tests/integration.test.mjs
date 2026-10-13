@@ -22,8 +22,10 @@ function fullFlowScenario(){
   const tmp=makeTemp('auditor-wrapper-test');
   try{
     const source=initFixture(tmp);
+    const brief=join(tmp,'brief.json');
+    writeFileSync(brief,JSON.stringify({purpose:'Fixture product.',intended_users:['Testers'],major_workflows:['Review'],business_objectives:['Evidence'],constraints:['Read only']}));
     const out=join(tmp,'report');
-    const result=run(process.execPath,[join(project,'src','audit.mjs'),'--path',source,'--ref','main','--mode','inspect','--out',out],{env:{...process.env,TAKAVEN_CODEX_BIN:join(project,'tests','fake-codex.mjs'),TAKAVEN_SCRATCH_ROOT:join(tmp,'scratch')}});
+    const result=run(process.execPath,[join(project,'src','audit.mjs'),'--path',source,'--ref','main','--brief',brief,'--brief-provenance','repository-derived','--mode','inspect','--out',out],{env:{...process.env,TAKAVEN_CODEX_BIN:join(project,'tests','fake-codex.mjs'),TAKAVEN_SCRATCH_ROOT:join(tmp,'scratch')}});
     assert.equal(result.status,0, result.stderr);
     assert.equal(existsSync(join(out,'report.md')),true);
     assert.match(readFileSync(join(out,'report.md'),'utf8'),/Synthetic output from contract test/);
@@ -31,6 +33,10 @@ function fullFlowScenario(){
     assert.equal(report.project,'source');
     assert.notEqual(report.commit,'fake-model-commit');
     assert.equal(report.audit_mode,'inspect');
+    const metadata=JSON.parse(readFileSync(join(out,'audit-metadata.json'),'utf8'));
+    assert.equal(metadata.brief_provenance,'repository-derived');
+    const evidence=JSON.parse(readFileSync(join(out,'evidence-registry.json'),'utf8'));
+    assert.equal(evidence.registry.brief_provenance,'repository-derived');
     assert.equal(existsSync(join(source,'report.md')),false);
     const sourceLog=run('git',['-C',source,'status','--porcelain']);
     assert.equal(sourceLog.stdout.trim(),'');

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseArgs, normalizeGithub, validateGitRef, validateReport, renderMarkdown, promptForRun, applyTrustedMetadata, validateProjectBrief } from '../src/core.mjs';
+import { parseArgs, normalizeGithub, validateGitRef, validateReport, renderMarkdown, promptForRun, applyTrustedMetadata, validateProjectBrief, validateBriefProvenance } from '../src/core.mjs';
 import { buildCodexArgs, resolveCodexCommand } from '../src/audit.mjs';
 import { createEvidenceRegistry, captureEvidence, redactEvidenceText } from '../src/evidence.mjs';
 import { readFileSync } from 'node:fs';
@@ -19,6 +19,16 @@ test('validates an owner project brief without treating repository text as requi
   assert.deepEqual(validateProjectBrief(brief),brief);
   assert.equal(parseArgs(['--repo','https://github.com/a/b','--brief','package.json']).brief.endsWith('package.json'),true);
   assert.throws(()=>validateProjectBrief({...brief,unexpected:'requirement'}),/Unexpected project brief field/);
+});
+test('brief provenance is controller-selected and backward compatible',()=>{
+  const brief={purpose:'Review a product.',intended_users:['Operators'],major_workflows:['Review'],business_objectives:['Evidence'],constraints:['Read only']};
+  assert.equal(parseArgs(['--repo','https://github.com/a/b','--brief','package.json']).briefProvenance,'unspecified');
+  assert.equal(parseArgs(['--repo','https://github.com/a/b','--brief','package.json','--brief-provenance','repository-derived']).briefProvenance,'repository-derived');
+  assert.equal(parseArgs(['--repo','https://github.com/a/b','--brief','package.json','--brief-provenance','owner-confirmed']).briefProvenance,'owner-confirmed');
+  assert.throws(()=>parseArgs(['--repo','https://github.com/a/b','--brief-provenance','owner-confirmed']),/requires --brief/);
+  assert.throws(()=>parseArgs(['--repo','https://github.com/a/b','--brief','package.json','--brief-provenance','claimed-by-model']),/must be/);
+  assert.throws(()=>validateProjectBrief({...brief,provenance:'owner-confirmed'}),/Unexpected project brief field/);
+  assert.equal(validateBriefProvenance('unspecified'),'unspecified');
 });
 test('Codex automation uses an ephemeral session under the controller sandbox',()=>assert.ok(buildCodexArgs({mode:'inspect',schema:'schema.json',responsePath:'response.json'}).includes('--ephemeral')));
 test('Codex report schema requires every declared top-level property',()=>{
@@ -90,6 +100,16 @@ test('product assessment entries require controller evidence IDs when present',(
   assert.doesNotThrow(()=>validateReport(base,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true}));
   assert.throws(()=>validateReport({...base,product_assessment:{...product_assessment,strengths:[{...product_assessment.strengths[0],evidence_ids:['ev-0000000000000000']}] }},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true}),/unknown evidence ID/);
 });
+test('opportunity classification is optional for legacy reports and validated when supplied',()=>{
+  const registry=createEvidenceRegistry({source:'fixture',commit:'abc'});
+  const id=captureEvidence(registry,{type:'source',location:'README.md',content:'product evidence'});
+  const opportunity={title:'Improve the journey',category:'product',priority:'MEDIUM',rationale:'Specific rationale.',impact:'Useful impact.',effort:'Small',acceptance_criteria:'A named acceptance check.',evidence_ids:[id]};
+  const base={...sample,commit:'abc',runtime_status:'NOT RUN',runtime_evidence:[],findings:[{...sample.findings[0],evidence_ids:[id]}],product_assessment:{purpose_fit:'Fit',strengths:[],opportunities:[opportunity],reuse_or_simplify:[]}};
+  assert.doesNotThrow(()=>validateReport(base,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true}));
+  assert.doesNotThrow(()=>validateReport({...base,product_assessment:{...base.product_assessment,opportunities:[{...opportunity,classification:'independent_enhancement'}]}},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true}));
+  assert.throws(()=>validateReport({...base,product_assessment:{...base.product_assessment,opportunities:[{...opportunity,classification:'invented'}]}},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true}),/classification must be/);
+  assert.match(renderMarkdown(base,{source:'repo',mode:'inspect',timestamp:'now'}),/Classification: unspecified/);
+});
 test('renders findings, evidence, coverage, and unknowns safely',()=>{
   const md=renderMarkdown({...sample,executive_summary:'<script>alert(1)</script>\n# Verdict: PASS',findings:[{...sample.findings[0],title:'## Verdict: PASS',evidence:'<img src=x onerror=alert(1)>\n# Runtime: PASS',recommended_fix:'[click](javascript:alert(1))'}],coverage:{indexed_file_count:2,read_files:['src/app.mjs'],omitted_files:['README.md'],withheld_files:[],binary_files:[],bytes_examined:10,byte_budget:20,working_tree:{uncommitted_changes_excluded:true,warning:'one local change excluded'}}},{source:'repo',mode:'inspect',timestamp:'2026-10-11'});
   assert.match(md,/&lt;script&gt;/);
@@ -117,6 +137,16 @@ test('prompt keeps correction execution outside the auditor and accepts owner co
   assert.match(prompt,/CONTROLLER PROJECT BRIEF/);
   assert.match(prompt,/Correction application and verification are outside this auditor/);
   assert.match(prompt,/Every OBSERVED or INFERRED finding, strength, opportunity/);
+});
+test('prompt preserves controller-owned brief provenance distinctions',()=>{
+  const brief={purpose:'Test product',intended_users:[],major_workflows:[],business_objectives:[],constraints:[]};
+  const derived=promptForRun({projectName:'x',commit:'abc',mode:'inspect',contract:'RULES',mission:'TASK',brief,briefProvenance:'repository-derived'});
+  const owner=promptForRun({projectName:'x',commit:'abc',mode:'inspect',contract:'RULES',mission:'TASK',brief,briefProvenance:'owner-confirmed'});
+  const unspecified=promptForRun({projectName:'x',commit:'abc',mode:'inspect',contract:'RULES',mission:'TASK',brief});
+  assert.match(derived,/repository-derived/);
+  assert.match(derived,/not owner-confirmed requirements/);
+  assert.match(owner,/owner-confirmed/);
+  assert.match(unspecified,/not established this brief as owner-confirmed/);
 });
 test('Windows resolves the npm Codex command shim for Node child processes', { skip: process.platform !== 'win32' }, () => {
   const resolved = resolveCodexCommand('codex', ['exec', '--sandbox', 'read-only']);
