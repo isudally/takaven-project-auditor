@@ -354,7 +354,17 @@ export function createApprovedRunner({ config, registry, scratch, timeoutMs = 12
   validateConfig(config);
   let setupResult = null;
   return ({ operation, checkout, patch }) => {
-    if (operation === 'correction_verification') return applyAndVerifyPatch({ patch, checkout, config, registry, timeoutMs, scratch });
+    if (operation === 'correction_verification') {
+      const evidenceId = captureEvidence(registry, {
+        type: 'controller_validation',
+        action: 'policy_gate',
+        operation,
+        outcome: 'rejected',
+        execution_verified: false,
+        observation: 'Correction execution is disabled at the approved runner boundary; no patch was applied.',
+      });
+      return { evidence_id: evidenceId, outcome: 'rejected', exit_code: null, execution_verified: false };
+    }
     if (operation === 'setup') {
       if (setupResult) return setupResult;
       const spec = config.setup;

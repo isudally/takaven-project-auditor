@@ -9,7 +9,7 @@
       "items": {
         "type": "object",
         "properties": {
-          "type": {"type": "string", "enum": ["source_search", "source_read", "runtime_evidence", "experiment", "correction_verification"]},
+          "type": {"type": "string", "enum": ["source_search", "source_read", "runtime_evidence", "experiment", "correction_verification"], "description": "Legacy compatibility only; the controller rejects correction_verification and never executes it."},
           "query": {"type": ["string", "null"]},
           "paths": {"type": ["array", "null"], "items": {"type": "string"}, "maxItems": 10},
           "evidence_ids": {"type": ["array", "null"], "items": {"type": "string", "pattern": "^ev-[a-f0-9]{16}$"}, "minItems": 1},

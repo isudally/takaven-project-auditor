@@ -107,8 +107,8 @@ function malformedCorrectionRetryScenario(){
     assert.equal(report.runtime_status,'PASS');
     const evidence=JSON.parse(readFileSync(join(out,'evidence-registry.json'),'utf8'));
     assert.equal(evidence.registry.records.some(record=>record.type==='model_request' && record.outcome==='failed_validation'),true);
-    assert.equal(evidence.registry.records.some(record=>record.type==='controller_validation' && record.outcome==='retry_requested'),true);
-    assert.equal(evidence.registry.records.some(record=>record.type==='runner_execution' && record.operation==='correction_verification' && record.outcome==='passed'),true);
+    assert.equal(evidence.registry.records.some(record=>record.type==='controller_validation' && record.action==='policy_gate' && record.outcome==='rejected'),true);
+    assert.equal(evidence.registry.records.some(record=>record.type==='runner_execution' && record.operation==='correction_verification'),false);
     assert.equal(run('git',['-C',source,'status','--porcelain']).stdout.trim(),'');
   } finally {rmSync(tmp,{recursive:true,force:true});}
 }

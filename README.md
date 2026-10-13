@@ -9,11 +9,12 @@
 - Codex CLI as the reasoning/execution engine (no custom model or paid agent service).
 - `inspect` (safe static review) and opt-in `verify` (tests/builds in a Codex sandbox).
 - Explicit evidence vs inference classification, negative controls where feasible, and NOT RUN/UNKNOWN outcomes.
-- Optional bounded investigative mode (`--investigate`) in which Codex may request additional source or imported evidence through a controller-validated registry.
+- Optional bounded investigative mode (`--investigate`) in which Codex may request additional source or imported evidence through a controller-validated registry. Correction execution requests are rejected; any proposed patch is advisory report data only.
+- Optional owner-supplied project brief (`--brief`) containing purpose, intended users, workflows, objectives and constraints. Missing context remains UNKNOWN rather than becoming an invented requirement.
 - Machine-readable `report.json` and readable `report.md`.
 - Ready-made hostile-documentation and clean-control fixtures for evaluation.
 
-**Status:** The bounded static-audit path and the controller-mediated evidence-request loop are implemented and tested against clean, hostile and real-project snapshots. Inspect mode reads controller-selected source evidence, validates coverage and evidence IDs, and keeps runtime status `NOT RUN`. The investigative loop can retrieve bounded source and previously captured runtime evidence, and can send a validated correction request to an explicitly configured disposable runner. Runtime claims require that runner configuration; a static or inspect-only invocation cannot claim execution.
+**Status:** The bounded static-audit path and the controller-mediated evidence-request loop are implemented and tested against clean, hostile and real-project snapshots. Inspect mode reads controller-selected source evidence, validates coverage and evidence IDs, and keeps runtime status `NOT RUN`. The investigative loop can retrieve bounded source and previously captured runtime evidence, and can request approved diagnostic experiments through an explicitly configured runner. Correction requests are rejected and proposed patches remain advisory; a separate implementation workflow owns changes. Runtime claims require runner configuration; a static or inspect-only invocation cannot claim execution.
 
 ### Work package 1 status
 
@@ -36,6 +37,9 @@ node src/audit.mjs --repo https://github.com/isudally/playkin --mode inspect --o
 
 # Bounded investigation using controller-mediated source/evidence requests
 node src/audit.mjs --repo https://github.com/isudally/playkin --mode inspect --investigate --evidence ./controller-evidence.json --out ./reports/playkin-investigation
+
+# Product context supplied separately by the owner; it is not repository instructions
+node src/audit.mjs --path /path/to/project --brief ./project-brief.json --mode inspect --investigate --out ./reports/project
 
 # Deeper audit, only with an explicit approved runner configuration and an isolated computer
 node src/audit.mjs --repo https://github.com/isudally/playkin --mode verify --runner-config ./runner-config.json --out ./reports/playkin-verified
@@ -65,8 +69,8 @@ Compare claims against known outcomes. Track **false-confidence rate**, evidence
 
 ## Next steps
 
-1. Prove one isolated runtime-execution workflow with credential-free tooling and independently captured command results.
+1. Keep diagnostic runtime checks credential-free and independently captured; do not use TAKAVEN to apply proposed repairs.
 2. Keep inspect-mode findings separate from runtime observations and treat any unavailable runtime checks as `NOT RUN`.
-3. Reassess the wrapper after the runtime proof; do not add services or automation without evidence of need.
+3. Compare the auditor with a properly briefed direct Codex review before adding services or automation.
 
 **Out of scope:** autonomous coding, production changes, multi-agent hierarchy, dashboards, self-hosted model serving and payment/billing services.

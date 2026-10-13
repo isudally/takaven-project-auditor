@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "properties": {
+    "purpose": {"type": "string", "minLength": 1, "maxLength": 4000},
+    "intended_users": {"type": "array", "maxItems": 20, "items": {"type": "string", "minLength": 1, "maxLength": 1000}},
+    "major_workflows": {"type": "array", "maxItems": 20, "items": {"type": "string", "minLength": 1, "maxLength": 1000}},
+    "business_objectives": {"type": "array", "maxItems": 20, "items": {"type": "string", "minLength": 1, "maxLength": 1000}},
+    "constraints": {"type": "array", "maxItems": 20, "items": {"type": "string", "minLength": 1, "maxLength": 1000}}
+  },
+  "required": ["purpose", "intended_users", "major_workflows", "business_objectives", "constraints"],
+  "additionalProperties": false
+}

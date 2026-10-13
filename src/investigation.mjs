@@ -7,7 +7,10 @@ export const MAX_INVESTIGATION_ROUNDS = 4;
 export const MAX_REQUESTS_PER_ROUND = 8;
 export const MAX_RETRIEVAL_BYTES = 128 * 1024;
 
-const REQUEST_TYPES = new Set(['source_search', 'source_read', 'runtime_evidence', 'experiment', 'correction_verification']);
+// Correction execution is intentionally outside the active auditor protocol.
+// TAKAVEN may recommend a patch as report data, but a separate implementation
+// workflow owns applying and verifying changes.
+const REQUEST_TYPES = new Set(['source_search', 'source_read', 'runtime_evidence', 'experiment']);
 const EXPERIMENTS = new Set(['build', 'declared_test', 'browser_smoke']);
 const SKIP_DIRS = new Set(['.git', 'node_modules', 'dist', 'build', 'coverage', '.next']);
 const SENSITIVE = /^(?:\.env(?:\..*)?|.*\.(?:pem|key|p12|pfx|sqlite|db))$/i;
@@ -39,7 +42,7 @@ function safeQuery(value) {
   return value;
 }
 
-export function validateInvestigationResponse(value, registry, { allowInvalidCorrectionPatch = false } = {}) {
+export function validateInvestigationResponse(value, registry) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid investigation response');
   const allowed = new Set(['action', 'rationale', 'requests']);
   for (const key of Object.keys(value)) if (!allowed.has(key)) throw new Error(`Unexpected investigation field: ${key}`);
@@ -68,16 +71,6 @@ export function validateInvestigationResponse(value, registry, { allowInvalidCor
     if (request.type === 'source_search' && request.continuation !== undefined && request.continuation !== null && (!Number.isInteger(request.continuation) || request.continuation < 0)) throw new Error('Invalid source_search continuation');
     if (request.type === 'runtime_evidence' && request.evidence_ids !== undefined && request.evidence_ids !== null) validateEvidenceIds(request.evidence_ids, registry, `requests[${index}].evidence_ids`);
     if (request.type === 'experiment' && !EXPERIMENTS.has(request.experiment)) throw new Error(`Experiment is not pre-approved: ${request.experiment}`);
-    if (request.type === 'correction_verification') {
-      if (typeof request.reason !== 'string' || request.reason.length === 0) throw new Error('correction_verification requires a reason');
-      if (request.patch !== undefined && request.patch !== null) {
-        try {
-          validateProposedPatch(request.patch);
-        } catch (error) {
-          if (!allowInvalidCorrectionPatch) throw error;
-        }
-      }
-    }
   }
   return value;
 }
@@ -237,32 +230,13 @@ export function processInvestigationRequests({ requests, checkout, registry, ret
       continue;
     }
     if (request.type === 'correction_verification') {
-      if (typeof runner !== 'function' || !request.patch) {
-        const evidenceId = captureEvidence(registry, {
-          type: 'correction_verification', action: 'policy_gate', outcome: 'not_available',
-          observation: typeof runner === 'function'
-            ? 'Correction verification requires a validated patch in the model request.'
-            : 'Patch application and runtime verification require an explicitly configured disposable runner; none was provided to this controller invocation.',
-          execution_verified: false,
-          proposed_patch: request.patch ?? null,
-        });
-        results.push({ type: request.type, evidence_id: evidenceId, outcome: 'not_available' });
-        continue;
-      }
-      const patch = validateProposedPatch(request.patch);
-      try {
-        const execution = runner({ operation: 'correction_verification', checkout, registry, patch: request.patch });
-        results.push({ type: request.type, ...execution, patch_paths: patch.paths });
-      } catch (error) {
-        const evidenceId = captureEvidence(registry, {
-          type: 'correction_verification', action: 'controller_execution', outcome: 'failed',
-          observation: `Correction verification failed before a validated result was produced: ${error.message}`,
-          execution_verified: false,
-          proposed_patch: request.patch,
-          error: { name: error.name, code: error.code, message: error.message },
-        });
-        results.push({ type: request.type, evidence_id: evidenceId, outcome: 'failed', execution_verified: false, error: error.message, patch_paths: patch.paths });
-      }
+      const evidenceId = captureEvidence(registry, {
+        type: 'controller_validation', action: 'policy_gate', outcome: 'rejected',
+        observation: 'Correction verification requests are disabled in the active auditor protocol; no patch was applied or executed.',
+        execution_verified: false,
+        proposed_patch: request.patch ?? null,
+      });
+      results.push({ type: request.type, evidence_id: evidenceId, outcome: 'rejected' });
     }
   }
   return { results, retrievedBytes, retrievedPaths: [...retrievedPaths], partialPaths: [...partialPaths], omittedLargeFiles: [...omittedLargeFiles], searchCoverage };

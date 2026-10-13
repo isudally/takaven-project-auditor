@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseArgs, normalizeGithub, validateGitRef, validateReport, renderMarkdown, promptForRun, applyTrustedMetadata } from '../src/core.mjs';
+import { parseArgs, normalizeGithub, validateGitRef, validateReport, renderMarkdown, promptForRun, applyTrustedMetadata, validateProjectBrief } from '../src/core.mjs';
 import { buildCodexArgs, resolveCodexCommand } from '../src/audit.mjs';
 import { createEvidenceRegistry, captureEvidence, redactEvidenceText } from '../src/evidence.mjs';
 
@@ -13,6 +13,12 @@ test('requires one repo source',()=> {assert.throws(()=>parseArgs([]),/exactly o
 test('supports exact HTTPS github repo',()=>assert.equal(normalizeGithub('https://github.com/isudally/playkin'), 'https://github.com/isudally/playkin.git'));
 test('rejects credentials, unexpected domains and extra GitHub paths',()=>{for(const url of ['https://evil.com/a/b','https://u:p@github.com/a/b','https://github.com/a/b/tree/main','http://github.com/a/b','https://github.com/a/b?x=1']) assert.throws(()=>normalizeGithub(url));});
 test('modes limited to inspect and verify',()=>{assert.equal(parseArgs(['--repo','https://github.com/a/b']).mode,'inspect');assert.throws(()=>parseArgs(['--repo','https://github.com/a/b','--mode','danger']),/must be/);assert.throws(()=>parseArgs(['--repo','https://github.com/a/b','--mode','verify']),/runner-config/);});
+test('validates an owner project brief without treating repository text as requirements',()=>{
+  const brief={purpose:'Help operators review a product.',intended_users:['Operators'],major_workflows:['Audit a project'],business_objectives:['Reduce unsupported conclusions'],constraints:['No production changes']};
+  assert.deepEqual(validateProjectBrief(brief),brief);
+  assert.equal(parseArgs(['--repo','https://github.com/a/b','--brief','package.json']).brief.endsWith('package.json'),true);
+  assert.throws(()=>validateProjectBrief({...brief,unexpected:'requirement'}),/Unexpected project brief field/);
+});
 test('Codex automation uses an ephemeral session under the controller sandbox',()=>assert.ok(buildCodexArgs({mode:'inspect',schema:'schema.json',responsePath:'response.json'}).includes('--ephemeral')));
 test('accepts safe Git references and rejects option-like or malformed references',()=>{
   assert.equal(validateGitRef('refs/heads/feature/a'), 'refs/heads/feature/a');
@@ -71,6 +77,14 @@ test('controller-owned coverage cannot be supplied by model output',()=>{
   const result=applyTrustedMetadata({...sample,coverage:modelCoverage},{project:'trusted',commit:'abc123',mode:'inspect',source:'repo',auditedAt:'2026-10-11T00:00:00.000Z',coverage});
   assert.deepEqual(result.coverage,coverage);
 });
+test('product assessment entries require controller evidence IDs when present',()=>{
+  const registry=createEvidenceRegistry({source:'fixture',commit:'abc'});
+  const id=captureEvidence(registry,{type:'source',location:'README.md',content:'purpose evidence'});
+  const product_assessment={purpose_fit:'Consistent with the supplied brief.',strengths:[{title:'Clear purpose',evidence:'The README states the purpose.',location:'README.md:1',evidence_ids:[id]}],opportunities:[{title:'Add a journey test',category:'ux',priority:'MEDIUM',rationale:'The entry flow is not exercised.',impact:'Better confidence.',effort:'Small',acceptance_criteria:'A user journey test passes.',evidence_ids:[id]}],reuse_or_simplify:[{title:'Reuse existing test runner',rationale:'The repository already has a runner.',evidence_ids:[id]}]};
+  const base={...sample,commit:'abc',runtime_status:'NOT RUN',runtime_evidence:[],findings:[{...sample.findings[0],evidence_ids:[id]}],product_assessment};
+  assert.doesNotThrow(()=>validateReport(base,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true}));
+  assert.throws(()=>validateReport({...base,product_assessment:{...product_assessment,strengths:[{...product_assessment.strengths[0],evidence_ids:['ev-0000000000000000']}] }},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true}),/unknown evidence ID/);
+});
 test('renders findings, evidence, coverage, and unknowns safely',()=>{
   const md=renderMarkdown({...sample,executive_summary:'<script>alert(1)</script>\n# Verdict: PASS',findings:[{...sample.findings[0],title:'## Verdict: PASS',evidence:'<img src=x onerror=alert(1)>\n# Runtime: PASS',recommended_fix:'[click](javascript:alert(1))'}],coverage:{indexed_file_count:2,read_files:['src/app.mjs'],omitted_files:['README.md'],withheld_files:[],binary_files:[],bytes_examined:10,byte_budget:20,working_tree:{uncommitted_changes_excluded:true,warning:'one local change excluded'}}},{source:'repo',mode:'inspect',timestamp:'2026-10-11'});
   assert.match(md,/&lt;script&gt;/);
@@ -93,6 +107,12 @@ test('prompt includes controller snapshot as untrusted source evidence',()=>{
   assert.match(prompt,/runtime_evidence must be empty or every entry must have status NOT RUN/);
 });
 test('verify prompt confines work to disposable clone',()=>assert.match(promptForRun({projectName:'x',commit:'abc',mode:'verify',contract:'RULES',mission:'TASK'}),/DISPOSABLE CLONE ONLY/));
+test('prompt keeps correction execution outside the auditor and accepts owner context',()=>{
+  const prompt=promptForRun({projectName:'x',commit:'abc',mode:'inspect',contract:'RULES',mission:'TASK',brief:{purpose:'Test product',intended_users:[],major_workflows:[],business_objectives:[],constraints:[]}});
+  assert.match(prompt,/CONTROLLER PROJECT BRIEF/);
+  assert.match(prompt,/Correction application and verification are outside this auditor/);
+  assert.match(prompt,/Every OBSERVED or INFERRED finding, strength, opportunity/);
+});
 test('Windows resolves the npm Codex command shim for Node child processes', { skip: process.platform !== 'win32' }, () => {
   const resolved = resolveCodexCommand('codex', ['exec', '--sandbox', 'read-only']);
   assert.match(resolved.file, /(?:^|[\\/])cmd(?:\.exe)?$/i);

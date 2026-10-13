@@ -35,6 +35,40 @@
         "additionalProperties": false
       }
     },
+    "product_assessment": {
+      "type": "object",
+      "properties": {
+        "purpose_fit": {"type": "string"},
+        "strengths": {"type": "array", "items": {
+          "type": "object",
+          "properties": {
+            "title": {"type": "string"}, "evidence": {"type": "string"}, "location": {"type": "string"},
+            "evidence_ids": {"type": "array", "items": {"type": "string", "pattern": "^ev-[a-f0-9]{16}$"}, "minItems": 1}
+          },
+          "required": ["title", "evidence", "location", "evidence_ids"], "additionalProperties": false
+        }},
+        "opportunities": {"type": "array", "items": {
+          "type": "object",
+          "properties": {
+            "title": {"type": "string"}, "category": {"type": "string", "enum": ["product", "ux", "technical", "security", "reuse"]},
+            "priority": {"type": "string", "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"]}, "rationale": {"type": "string"},
+            "impact": {"type": "string"}, "effort": {"type": "string"}, "acceptance_criteria": {"type": "string"},
+            "evidence_ids": {"type": "array", "items": {"type": "string", "pattern": "^ev-[a-f0-9]{16}$"}, "minItems": 1}
+          },
+          "required": ["title", "category", "priority", "rationale", "impact", "effort", "acceptance_criteria", "evidence_ids"], "additionalProperties": false
+        }},
+        "reuse_or_simplify": {"type": "array", "items": {
+          "type": "object",
+          "properties": {
+            "title": {"type": "string"}, "rationale": {"type": "string"},
+            "evidence_ids": {"type": "array", "items": {"type": "string", "pattern": "^ev-[a-f0-9]{16}$"}, "minItems": 1}
+          },
+          "required": ["title", "rationale", "evidence_ids"], "additionalProperties": false
+        }}
+      },
+      "required": ["purpose_fit", "strengths", "opportunities", "reuse_or_simplify"],
+      "additionalProperties": false
+    },
     "reuse_assessment": {"type": "array", "items": {"type": "string"}},
     "commercial_risks": {"type": "array", "items": {"type": "string"}},
     "unverified": {"type": "array", "items": {"type": "string"}},
