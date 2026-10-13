@@ -67,7 +67,7 @@ test('rejects unsupported runtime success claims',()=>{
 });
 test('runtime PASS requires an executed controller record, not a source or imported record',()=>{
   const registry = createEvidenceRegistry({source:'fixture',commit:'abc'});
-  const sourceId = captureEvidence(registry,{type:'source',action:'source_read',content:'the build passed'});
+  const sourceId = captureEvidence(registry,{type:'source',action:'source_read',location:'src/app.js',content_hash:'sha256:test',content:'the build passed',outcome:'retrieved'});
   const report = {...sample,commit:'abc',runtime_status:'PASS',runtime_evidence:[{...sample.runtime_evidence[0],status:'PASS',evidence_ids:[sourceId]}],findings:[{...sample.findings[0],evidence_ids:[sourceId]}]};
   assert.throws(()=>validateReport(report,{mode:'verify',evidenceRegistry:registry,requireEvidenceIds:true}),/eligible controller execution evidence/);
   const runId = captureEvidence(registry,{type:'runner_execution',action:'approved_runner',execution_verified:true,outcome:'passed',exit_code:0});
@@ -88,11 +88,20 @@ test('rejects malformed nested evidence while preserving static findings',()=>{
 });
 test('investigation mode requires controller-owned evidence IDs',()=>{
   const registry = createEvidenceRegistry({source:'fixture',commit:'abc'});
-  const evidenceId = captureEvidence(registry,{type:'source',location:'src/app.js',content:'throw new Error()'});
+  const evidenceId = captureEvidence(registry,{type:'source',location:'src/app.js',content_hash:'sha256:test',content:'throw new Error()',outcome:'retrieved'});
   const report = {...sample, runtime_status:'NOT RUN', runtime_evidence:[], proposed_patch:'--- a/src/app.js\n+++ b/src/app.js\n@@\n-x\n+y', findings:[{...sample.findings[0], evidence_ids:[evidenceId]}]};
   assert.equal(validateReport(report,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true}).findings[0].evidence_ids[0],evidenceId);
   assert.throws(()=>validateReport({...report,findings:[{...report.findings[0],evidence_ids:['ev-0000000000000000']}]},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true}),/unknown evidence ID/);
   assert.throws(()=>validateReport({...report,findings:[{...report.findings[0],evidence_type:'UNKNOWN',evidence_ids:['ev-0000000000000000']}]},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true}),/unknown evidence ID/);
+});
+test('model-request evidence cannot support a source finding',()=>{
+  const registry=createEvidenceRegistry({source:'fixture',commit:'abc'});
+  const requestId=captureEvidence(registry,{type:'model_request',action:'investigation_round',outcome:'request'});
+  const report={...sample,commit:'abc',runtime_status:'NOT RUN',runtime_evidence:[],findings:[{...sample.findings[0],evidence_ids:[requestId]}]};
+  assert.throws(()=>validateReport(report,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true}),/eligible controller source or execution evidence/);
+});
+test('verify mode requires the controller-mediated investigation path',()=>{
+  assert.throws(()=>parseArgs(['--repo','https://github.com/a/b','--mode','verify','--runner-config','package.json']),/--investigate is required/);
 });
 test('strict inspection validation rejects observed and inferred findings without controller evidence',()=>{
   const registry = createEvidenceRegistry({source:'fixture',commit:'abc'});
@@ -121,7 +130,7 @@ test('controller-owned coverage cannot be supplied by model output',()=>{
 });
 test('product assessment entries require controller evidence IDs when present',()=>{
   const registry=createEvidenceRegistry({source:'fixture',commit:'abc'});
-  const id=captureEvidence(registry,{type:'source',location:'README.md',content:'purpose evidence'});
+  const id=captureEvidence(registry,{type:'source',location:'README.md',content_hash:'sha256:test',content:'purpose evidence',outcome:'retrieved'});
   const product_assessment={purpose_fit:'Consistent with the supplied brief.',strengths:[{title:'Clear purpose',evidence:'The README states the purpose.',location:'README.md:1',evidence_ids:[id]}],opportunities:[{title:'Add a journey test',category:'ux',priority:'MEDIUM',rationale:'The entry flow is not exercised.',impact:'Better confidence.',effort:'Small',acceptance_criteria:'A user journey test passes.',evidence_ids:[id]}],reuse_or_simplify:[{title:'Reuse existing test runner',rationale:'The repository already has a runner.',evidence_ids:[id]}]};
   const base={...sample,commit:'abc',runtime_status:'NOT RUN',runtime_evidence:[],findings:[{...sample.findings[0],evidence_ids:[id]}],product_assessment};
   assert.doesNotThrow(()=>validateReport(base,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true}));
@@ -129,7 +138,7 @@ test('product assessment entries require controller evidence IDs when present',(
 });
 test('opportunity classification is optional for legacy reports and validated when supplied',()=>{
   const registry=createEvidenceRegistry({source:'fixture',commit:'abc'});
-  const id=captureEvidence(registry,{type:'source',location:'README.md',content:'product evidence'});
+  const id=captureEvidence(registry,{type:'source',location:'README.md',content_hash:'sha256:test',content:'product evidence',outcome:'retrieved'});
   const opportunity={title:'Improve the journey',category:'product',priority:'MEDIUM',rationale:'Specific rationale.',impact:'Useful impact.',effort:'Small',acceptance_criteria:'A named acceptance check.',evidence_ids:[id]};
   const base={...sample,commit:'abc',runtime_status:'NOT RUN',runtime_evidence:[],findings:[{...sample.findings[0],evidence_ids:[id]}],product_assessment:{purpose_fit:'Fit',strengths:[],opportunities:[opportunity],reuse_or_simplify:[]}};
   assert.doesNotThrow(()=>validateReport(base,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true}));

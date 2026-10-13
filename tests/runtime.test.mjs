@@ -34,6 +34,15 @@ test('controller derives PARTIAL when build passes but required browser check is
   assert.doesNotThrow(() => validateReport(trusted, { mode: 'verify', evidenceRegistry: registry, requireEvidenceIds: true }));
 });
 
+test('explicitly scoped acceptance checks cannot produce complete PASS', () => {
+  const registry = createEvidenceRegistry({ source: 'fixture', commit: 'trusted-commit', scenario: 'scope', configuredChecks: ['build', 'declared_test'], requiredChecks: ['build'] });
+  captureEvidence(registry, { type: 'runner_execution', operation: 'build', execution_verified: true, outcome: 'passed', exit_code: 0 });
+  const result = applyControllerRuntimeResults({ ...baseReport, commit: 'trusted-commit', verdict: 'CONTINUE' }, registry, { scenario: 'scope', mode: 'verify' });
+  assert.equal(result.report.runtime_status, 'PARTIAL');
+  assert.equal(result.report.verdict, 'INCONCLUSIVE');
+  assert.equal(result.report.runtime_evidence.find(entry => entry.check === 'declared_test').status, 'NOT RUN');
+});
+
 test('controller status overrides contradictory model status and records the contradiction', () => {
   const registry = createEvidenceRegistry({ source: 'fixture', commit: 'trusted-commit', scenario: 'web-proof', requiredChecks: ['build'] });
   const buildId = captureEvidence(registry, { type: 'runner_execution', operation: 'build', command: 'npm run build', execution_verified: true, outcome: 'passed', exit_code: 0 });
@@ -73,6 +82,15 @@ test('contradictory or incomplete controller records remain unverified', () => {
     assert.equal(result.report.runtime_status, 'NOT RUN', JSON.stringify(record));
     assert.equal(result.eligible_evidence_ids.length, 0, JSON.stringify(record));
   }
+});
+
+test('browser command success without controller UI assertion is not application PASS', () => {
+  const registry = createEvidenceRegistry({ source: 'fixture', commit: 'trusted-commit', scenario: 'browser', requiredChecks: ['browser_smoke'] });
+  const evidenceId = captureEvidence(registry, { type: 'runner_execution', operation: 'browser_smoke', execution_verified: true, outcome: 'passed', exit_code: 0 });
+  const result = applyControllerRuntimeResults({ ...baseReport, commit: 'trusted-commit', runtime_status: 'PASS' }, registry, { scenario: 'browser', mode: 'verify' });
+  assert.equal(result.report.runtime_status, 'NOT RUN');
+  assert.equal(result.report.runtime_evidence[0].status, 'NOT RUN');
+  assert.deepEqual(result.report.runtime_evidence[0].evidence_ids, [evidenceId]);
 });
 
 test('controller runtime facts cannot be replaced by model-authored descriptions', () => {

@@ -19,7 +19,8 @@ if (schema.endsWith('investigation-request.schema.json')) {
     writeFileSync(output, JSON.stringify({ action: 'final', rationale: 'The correction result is available.', requests: [] }));
   }
 } else {
-  const evidenceId = ids.at(-1);
+  const executionMatch = [...prompt.matchAll(/"evidence_id":\s*"(ev-[a-f0-9]{16})"[\s\S]{0,500}?"type":\s*"(?:runner_execution|executed_command|browser_execution)"/g)].at(-1);
+  const evidenceId = executionMatch?.[1] ?? ids.at(-1);
   writeFileSync(output, JSON.stringify({
     project: 'model-project', commit: 'model-commit', verdict: 'CONTINUE', executive_summary: 'The explicitly requested correction passed the controller checks.',
     runtime_status: 'PASS', runtime_evidence: [{ check: 'build', status: 'PASS', command: 'node -e process.stdout.write("build")', observation: 'The approved disposable correction build passed.', negative_control: 'The baseline was separately executed before correction verification.', evidence_ids: [evidenceId] }],

@@ -8,6 +8,21 @@ const ALLOWED_EXECUTABLES = new Set(['node', 'npm', 'npx', 'python', 'python3', 
 const WINDOWS_SHIMS = new Set(['npm', 'npx', 'pnpm', 'yarn']);
 const SENSITIVE_ENV = /(?:token|secret|password|private|credential|api[_-]?key)/i;
 const COMMAND_OPERATIONS = ['setup', 'build', 'declared_test', 'server', 'browser_smoke'];
+export const ACCEPTANCE_OPERATIONS = ['build', 'declared_test', 'browser_smoke'];
+
+export function requiredChecksForConfig(config) {
+  const configured = ACCEPTANCE_OPERATIONS.filter(operation => Boolean(config?.[operation]));
+  if (configured.length === 0) throw new Error('Runner config must declare at least one acceptance check');
+  if (config.required_checks === undefined) return { configured, required: configured };
+  if (!Array.isArray(config.required_checks) || config.required_checks.length === 0) {
+    throw new Error('Runner required_checks must not be empty for verify mode');
+  }
+  const duplicate = new Set(config.required_checks).size !== config.required_checks.length;
+  if (duplicate || config.required_checks.some(check => !configured.includes(check))) {
+    throw new Error('Runner required_checks must name configured acceptance checks without duplicates');
+  }
+  return { configured, required: [...config.required_checks] };
+}
 
 function executableName(command) {
   return command.split(/[\\/]/).at(-1).replace(/\.(?:cmd|exe|bat)$/i, '').toLowerCase();
@@ -347,7 +362,9 @@ function validateConfig(config) {
 }
 
 export function loadRunnerConfig(path) {
-  return validateConfig(JSON.parse(readFileSync(path, 'utf8')));
+  const config = validateConfig(JSON.parse(readFileSync(path, 'utf8')));
+  requiredChecksForConfig(config);
+  return config;
 }
 
 export function createApprovedRunner({ config, registry, scratch, timeoutMs = 120000 }) {

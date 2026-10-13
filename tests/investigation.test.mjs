@@ -111,6 +111,36 @@ test('follow-up source reads never load a file beyond the controller byte budget
   } finally { rmSync(checkout, { recursive: true, force: true }); }
 });
 
+test('source coverage upgrades partial reads and never downgrades complete reads', () => {
+  const checkout = mkdtempSync(join(tmpdir(), 'takaven-investigation-coverage-state-'));
+  try {
+    writeFileSync(join(checkout, 'large.mjs'), `${'x'.repeat(5000)}\nneedle\n`);
+    const registry = createEvidenceRegistry({ source: 'fixture', commit: 'abc' });
+    const coverageStates = new Map();
+    const partial = processInvestigationRequests({ checkout, registry, coverageStates, requests: [{ type: 'source_search', query: 'needle' }] });
+    assert.deepEqual(partial.partialPaths, ['large.mjs']);
+    const complete = processInvestigationRequests({ checkout, registry, coverageStates, requests: [{ type: 'source_read', paths: ['large.mjs'] }] });
+    assert.equal(complete.results[0].files[0].completeness, 'complete');
+    assert.deepEqual(complete.completePaths, ['large.mjs']);
+    assert.deepEqual(complete.partialPaths, []);
+    const afterSearch = processInvestigationRequests({ checkout, registry, coverageStates, requests: [{ type: 'source_search', query: 'needle' }] });
+    assert.deepEqual(afterSearch.completePaths, ['large.mjs']);
+    assert.deepEqual(afterSearch.partialPaths, []);
+  } finally { rmSync(checkout, { recursive: true, force: true }); }
+});
+
+test('source search cannot downgrade a file already complete in the initial snapshot', () => {
+  const checkout = mkdtempSync(join(tmpdir(), 'takaven-investigation-initial-coverage-'));
+  try {
+    writeFileSync(join(checkout, 'app.mjs'), 'export const value = "needle";\n');
+    const registry = createEvidenceRegistry({ source: 'fixture', commit: 'abc' });
+    const coverageStates = new Map([['app.mjs', 'complete']]);
+    const result = processInvestigationRequests({ checkout, registry, coverageStates, requests: [{ type: 'source_search', query: 'needle' }] });
+    assert.deepEqual(result.completePaths, ['app.mjs']);
+    assert.deepEqual(result.partialPaths, []);
+  } finally { rmSync(checkout, { recursive: true, force: true }); }
+});
+
 test('patch validation is limited to safe repository-relative unified diffs', () => {
   assert.deepEqual(validateProposedPatch('diff --git a/src/app.mjs b/src/app.mjs\n--- a/src/app.mjs\n+++ b/src/app.mjs\n@@ -1 +1 @@\n-const x = 1;\n+const x = 2;'), { paths: ['src/app.mjs'] });
   assert.throws(() => validateProposedPatch('diff --git a/../../outside b/../../outside\n--- a/../../outside\n+++ b/../../outside\n@@ -1 +1 @@\n-x\n+y'), /not allowed/);

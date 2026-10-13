@@ -138,6 +138,22 @@ function executionHandoffScenario(){
   } finally {rmSync(tmp,{recursive:true,force:true});}
 }
 
+function omittedAcceptanceCheckScenario(){
+  const tmp=makeTemp('auditor-omitted-check-test');
+  try{
+    const source=initFixture(tmp);
+    const config=join(tmp,'runner.json');
+    writeFileSync(config, JSON.stringify({version:1,scenario:'fixture-checks',build:{command:['node','-e','process.stdout.write("controller-build")']},declared_test:{command:['node','-e','process.stdout.write("controller-test")']}}));
+    const out=join(tmp,'report');
+    const result=run(process.execPath,[join(project,'src','audit.mjs'),'--path',source,'--mode','verify','--investigate','--runner-config',config,'--out',out],{env:{...process.env,TAKAVEN_CODEX_BIN:join(project,'tests','fake-investigator-execution.mjs'),TAKAVEN_SCRATCH_ROOT:join(tmp,'scratch')}});
+    assert.equal(result.status,0,result.stderr);
+    const report=JSON.parse(readFileSync(join(out,'report.json'),'utf8'));
+    assert.equal(report.runtime_status,'PARTIAL');
+    assert.equal(report.verdict,'INCONCLUSIVE');
+    assert.equal(report.runtime_evidence.find(entry=>entry.check==='declared_test').status,'NOT RUN');
+  } finally {rmSync(tmp,{recursive:true,force:true});}
+}
+
 test('controller integration scenarios', { concurrency: false }, () => {
   fullFlowScenario();
   dirtyWorkingTreeScenario();
@@ -146,4 +162,5 @@ test('controller integration scenarios', { concurrency: false }, () => {
   malformedFinalPatchScenario();
   malformedCorrectionRetryScenario();
   executionHandoffScenario();
+  omittedAcceptanceCheckScenario();
 });

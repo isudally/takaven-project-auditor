@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createEvidenceRegistry, isEligibleRuntimeEvidence } from '../src/evidence.mjs';
-import { createApprovedRunner } from '../src/runner.mjs';
+import { createApprovedRunner, requiredChecksForConfig } from '../src/runner.mjs';
 
 function initGitCheckout(directory) {
   writeFileSync(join(directory, 'app.mjs'), 'export const broken = true;\n');
@@ -26,6 +26,15 @@ test('approved runner captures independent command evidence', () => {
     assert.equal(isEligibleRuntimeEvidence(registry, result.evidence_id, { status: 'PASS', commit: 'abc' }), true);
     assert.match(registry.records[0].stdout, /ok/);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('runner derives acceptance checks without treating setup as an acceptance check', () => {
+  assert.deepEqual(requiredChecksForConfig({ version: 1, setup: { command: ['node', '-e', 'true'] }, build: { command: ['node', '-e', 'true'] }, declared_test: { command: ['node', '-e', 'true'] } }), {
+    configured: ['build', 'declared_test'],
+    required: ['build', 'declared_test'],
+  });
+  assert.throws(() => requiredChecksForConfig({ version: 1, build: { command: ['node', '-e', 'true'] }, required_checks: [] }), /must not be empty/);
+  assert.throws(() => requiredChecksForConfig({ version: 1, build: { command: ['node', '-e', 'true'] }, required_checks: ['declared_test'] }), /configured acceptance checks/);
 });
 
 test('runner rejects unapproved executables and secret environment names', () => {

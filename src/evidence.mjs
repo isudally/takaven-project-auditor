@@ -4,6 +4,8 @@ const ID_PATTERN = /^ev-[a-f0-9]{16}$/;
 
 const SECRET_KEY = /^(?:api[_-]?key|secret|token|password|passwd|private[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token)$/i;
 const TOKEN_VALUE = /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|AKIA[A-Z0-9]{12,}|xox[baprs]-[A-Za-z0-9-]{12,})\b/g;
+const SOURCE_EVIDENCE_TYPES = new Set(['source_snapshot', 'source']);
+const EXECUTION_EVIDENCE_TYPES = new Set(['executed_command', 'browser_execution', 'runner_execution']);
 
 export function redactEvidenceText(value) {
   return String(value)
@@ -34,11 +36,11 @@ function stableJson(value) {
   return JSON.stringify(value);
 }
 
-export function createEvidenceRegistry({ source, commit, scenario = 'default', requiredChecks = [], briefProvenance = 'unspecified' } = {}) {
+export function createEvidenceRegistry({ source, commit, scenario = 'default', requiredChecks = [], configuredChecks = [], briefProvenance = 'unspecified' } = {}) {
   if (typeof source !== 'string' || typeof commit !== 'string') throw new Error('Evidence registry requires source and commit');
-  if (typeof scenario !== 'string' || scenario.length === 0 || !Array.isArray(requiredChecks)) throw new Error('Evidence registry requires a valid scenario and required checks');
+  if (typeof scenario !== 'string' || scenario.length === 0 || !Array.isArray(requiredChecks) || !Array.isArray(configuredChecks)) throw new Error('Evidence registry requires a valid scenario and checks');
   if (!['owner-confirmed', 'repository-derived', 'unspecified'].includes(briefProvenance)) throw new Error('Evidence registry requires a valid brief provenance');
-  return { version: 1, authority: 'trusted_controller', source, commit, scenario, brief_provenance: briefProvenance, required_checks: [...requiredChecks], records: [], ids: new Set() };
+  return { version: 1, authority: 'trusted_controller', source, commit, scenario, brief_provenance: briefProvenance, required_checks: [...requiredChecks], configured_checks: [...configuredChecks], records: [], ids: new Set() };
 }
 
 export function captureEvidence(registry, record) {
@@ -74,6 +76,20 @@ export function validateEvidenceIds(ids, registry, field = 'evidence_ids') {
   return ids;
 }
 
+export function isEligibleFindingEvidence(registry, id, { source = registry?.source, commit = registry?.commit } = {}) {
+  if (!hasEvidence(registry, id)) return false;
+  const record = registry.records.find(item => item.evidence_id === id);
+  if (!record || record.captured_by !== 'trusted_controller') return false;
+  if (source !== undefined && record.source !== source) return false;
+  if (commit !== undefined && record.commit !== commit) return false;
+  if (SOURCE_EVIDENCE_TYPES.has(record.type)) {
+    return typeof record.location === 'string'
+      && typeof record.content_hash === 'string'
+      && ['retrieved', 'read'].includes(record.outcome);
+  }
+  return EXECUTION_EVIDENCE_TYPES.has(record.type) && deriveRuntimeEvidenceStatus(record) !== null;
+}
+
 // A runtime record must have one coherent controller-observed outcome. In
 // particular, a zero exit code or positive UI flag must never override an
 // explicit failure, timeout, signal, spawn error, or negative UI assertion.
@@ -86,9 +102,10 @@ export function deriveRuntimeEvidenceStatus(record) {
   const uiFailed = record.ui_passed === false;
   const timedOut = record.timed_out === true || record.timeout === true || record.outcome === 'timed_out';
   const hasLaunchFailure = Boolean(record.spawn_error) || record.signal !== undefined && record.signal !== null;
+  const browserCheck = record.type === 'browser_execution' || record.operation === 'browser_smoke' || record.check === 'browser_smoke';
 
   if (record.outcome === 'passed') {
-    if (exitFailed || uiFailed || timedOut || hasLaunchFailure) return null;
+    if ((!exitSucceeded && !uiSucceeded) || browserCheck && !uiSucceeded || exitFailed || uiFailed || timedOut || hasLaunchFailure) return null;
     return 'PASS';
   }
 
@@ -126,6 +143,7 @@ export function serialiseEvidenceRegistry(registry, { includeInitialContent = tr
     scenario: registry.scenario,
     brief_provenance: registry.brief_provenance,
     required_checks: [...registry.required_checks],
+    configured_checks: [...(registry.configured_checks ?? [])],
     records: registry.records.map(record => {
       if (includeInitialContent || record.action !== 'initial_snapshot') return { ...record };
       const { content, ...metadata } = record;
@@ -144,6 +162,7 @@ export function evidenceRegistryIndex(registry) {
     scenario: registry.scenario,
     brief_provenance: registry.brief_provenance,
     required_checks: [...registry.required_checks],
+    configured_checks: [...(registry.configured_checks ?? [])],
     records: registry.records.map(record => ({
       evidence_id: record.evidence_id,
       type: record.type,
