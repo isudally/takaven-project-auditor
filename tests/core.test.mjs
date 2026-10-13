@@ -35,6 +35,24 @@ test('Codex report schema requires every declared top-level property',()=>{
   const schema=JSON.parse(readFileSync(new URL('../report.schema.json',import.meta.url),'utf8'));
   assert.deepEqual([...Object.keys(schema.properties)].sort(),[...schema.required].sort());
 });
+test('model-facing schemas require every declared property at every object depth',()=>{
+  const schemaNames=['report.schema.json','investigation-request.schema.json'];
+  for(const schemaName of schemaNames){
+    const schema=JSON.parse(readFileSync(new URL(`../${schemaName}`,import.meta.url),'utf8'));
+    const visit=(node,path)=>{
+      if(!node||typeof node!=='object') return;
+      if(node.type==='object'&&node.properties){
+        assert.equal(node.additionalProperties,false,`${schemaName} ${path} must reject additional properties`);
+        assert.deepEqual([...node.required].sort(),Object.keys(node.properties).sort(),`${schemaName} ${path} must require every property`);
+      }
+      for(const [key,value] of Object.entries(node)){
+        if(key==='properties') for(const [property,child] of Object.entries(value)) visit(child,`${path}.properties.${property}`);
+        else if(key==='items') visit(value,`${path}.items`);
+      }
+    };
+    visit(schema,'$');
+  }
+});
 test('accepts safe Git references and rejects option-like or malformed references',()=>{
   assert.equal(validateGitRef('refs/heads/feature/a'), 'refs/heads/feature/a');
   assert.equal(parseArgs(['--repo','https://github.com/a/b','--ref','v1.2.3']).ref, 'v1.2.3');

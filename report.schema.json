@@ -56,7 +56,7 @@
             "impact": {"type": "string"}, "effort": {"type": "string"}, "acceptance_criteria": {"type": "string"},
             "evidence_ids": {"type": "array", "items": {"type": "string", "pattern": "^ev-[a-f0-9]{16}$"}, "minItems": 1}
           },
-          "required": ["title", "category", "priority", "rationale", "impact", "effort", "acceptance_criteria", "evidence_ids"], "additionalProperties": false
+          "required": ["title", "category", "classification", "priority", "rationale", "impact", "effort", "acceptance_criteria", "evidence_ids"], "additionalProperties": false
         }},
         "reuse_or_simplify": {"type": "array", "items": {
           "type": "object",
