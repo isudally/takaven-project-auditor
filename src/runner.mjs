@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync, existsSync, realpathSync, mkdirSync, rmSync, cpSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, realpathSync, mkdirSync, rmSync, cpSync, readdirSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { join, resolve, sep } from 'node:path';
 import { captureEvidence, redactEvidenceText } from './evidence.mjs';
@@ -190,12 +190,25 @@ function runBrowserSmoke({ spec, checkout, registry, timeoutMs }) {
 
 function cloneCorrectionCheckout(checkout, scratch) {
   const correctionCheckout = join(scratch, 'correction-checkout');
+  const containsCopiedSource = () => {
+    try {
+      return readdirSync(correctionCheckout, { withFileTypes: true }).some(entry => entry.name !== '.git');
+    } catch {
+      return false;
+    }
+  };
+  const containsTrackedSource = () => {
+    const listed = spawnSync('git', ['-C', checkout, 'ls-tree', '-r', '--name-only', 'HEAD'], { encoding: 'utf8', shell: false, windowsHide: true, timeout: 120000 });
+    if (listed.status !== 0) return false;
+    const files = listed.stdout.trim().split(/\r?\n/).filter(Boolean);
+    return files.length > 0 && files.every(file => existsSync(join(correctionCheckout, ...file.split('/'))));
+  };
   const preparePatchableArchive = () => {
     const initialized = spawnSync('git', ['-C', correctionCheckout, 'init', '-q'], { encoding: 'utf8', shell: false, windowsHide: true, timeout: 120000 });
     const indexed = initialized.status === 0
       ? spawnSync('git', ['-C', correctionCheckout, 'add', '-A'], { encoding: 'utf8', shell: false, windowsHide: true, timeout: 120000 })
       : null;
-    return initialized.status === 0 && indexed?.status === 0;
+    return initialized.status === 0 && indexed?.status === 0 && containsTrackedSource();
   };
   mkdirSync(correctionCheckout, { recursive: true });
   const archive = join(scratch, 'correction-checkout.tar');
@@ -213,10 +226,16 @@ function cloneCorrectionCheckout(checkout, scratch) {
   const cloned = spawnSync('git', ['clone', '--quiet', '--no-hardlinks', '--', checkout, correctionCheckout], {
     encoding: 'utf8', shell: false, windowsHide: true, timeout: 120000,
   });
-  if (cloned.status === 0) return correctionCheckout;
+  if (cloned.status === 0 && containsTrackedSource()) return correctionCheckout;
   rmSync(correctionCheckout, { recursive: true, force: true });
   cpSync(checkout, correctionCheckout, { recursive: true, force: true, filter: source => !source.includes(`${sep}.git${sep}`) && !source.endsWith(`${sep}.git`) });
-  if ((existsSync(join(correctionCheckout, 'package.json')) || existsSync(join(correctionCheckout, 'app.mjs'))) && preparePatchableArchive()) return correctionCheckout;
+  if (containsCopiedSource()) {
+    // The copied checkout is still disposable. Git metadata is useful for patch
+    // application and diff capture, but absence of Git must not make an already
+    // verified source copy appear empty on restricted Windows hosts.
+    preparePatchableArchive();
+    return correctionCheckout;
+  }
   throw new Error(`Disposable correction checkout failed: ${cloned.stderr ?? cloned.stdout ?? 'git clone failed'}`);
 }
 

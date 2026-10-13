@@ -39,7 +39,7 @@ function safeQuery(value) {
   return value;
 }
 
-export function validateInvestigationResponse(value, registry) {
+export function validateInvestigationResponse(value, registry, { allowInvalidCorrectionPatch = false } = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid investigation response');
   const allowed = new Set(['action', 'rationale', 'requests']);
   for (const key of Object.keys(value)) if (!allowed.has(key)) throw new Error(`Unexpected investigation field: ${key}`);
@@ -70,10 +70,29 @@ export function validateInvestigationResponse(value, registry) {
     if (request.type === 'experiment' && !EXPERIMENTS.has(request.experiment)) throw new Error(`Experiment is not pre-approved: ${request.experiment}`);
     if (request.type === 'correction_verification') {
       if (typeof request.reason !== 'string' || request.reason.length === 0) throw new Error('correction_verification requires a reason');
-      if (request.patch !== undefined && request.patch !== null) validateProposedPatch(request.patch);
+      if (request.patch !== undefined && request.patch !== null) {
+        try {
+          validateProposedPatch(request.patch);
+        } catch (error) {
+          if (!allowInvalidCorrectionPatch) throw error;
+        }
+      }
     }
   }
   return value;
+}
+
+export function findInvalidCorrectionPatch(value, registry) {
+  if (!value || !Array.isArray(value.requests)) return null;
+  for (const [index, request] of value.requests.entries()) {
+    if (request?.type !== 'correction_verification' || request.patch === undefined || request.patch === null) continue;
+    try {
+      validateProposedPatch(request.patch);
+    } catch (error) {
+      return { index, patch: request.patch, error: error.message };
+    }
+  }
+  return null;
 }
 
 function contentHash(content) {

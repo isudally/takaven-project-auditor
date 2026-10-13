@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync, spawn } from 'node:child_process';
 import { parseArgs, renderMarkdown, validateReport, applyTrustedMetadata, promptForRun } from './core.mjs';
 import { createEvidenceRegistry, captureEvidence, evidenceRegistryIndex, serialiseEvidenceRegistry, redactEvidenceText } from './evidence.mjs';
-import { MAX_INVESTIGATION_ROUNDS, processInvestigationRequests, validateInvestigationResponse, validateProposedPatch } from './investigation.mjs';
+import { MAX_INVESTIGATION_ROUNDS, processInvestigationRequests, validateInvestigationResponse, findInvalidCorrectionPatch, validateProposedPatch } from './investigation.mjs';
 import { createApprovedRunner, loadRunnerConfig } from './runner.mjs';
 import { applyControllerRuntimeResults } from './runtime.mjs';
 
@@ -371,7 +371,7 @@ Previous investigation rounds:
 ${JSON.stringify(history)}`;
 }
 
-function finalInvestigationPrompt(basePrompt, registry, history) {
+function finalInvestigationPrompt(basePrompt, registry, history, feedback = null) {
   return `${basePrompt}
 
 # FINAL INVESTIGATION REPORT
@@ -383,11 +383,25 @@ Controller evidence registry:
 ${JSON.stringify(serialiseEvidenceRegistry(registry, { includeInitialContent: false }))}
 
 Investigation history:
-${JSON.stringify(history)}`;
+${JSON.stringify(history)}
+
+${feedback ? `# CONTROLLER VALIDATION FEEDBACK
+The previous report was retained as a failed model attempt. ${feedback}
+Return a complete replacement report. Do not claim correction execution unless the controller evidence registry contains it. If correction cannot be verified, set proposed_patch to null and disclose that limitation in unverified.` : ''}`;
 }
 
 function compactControllerResult(value) {
   return JSON.parse(JSON.stringify(value, (key, nested) => (key === 'content' || key === 'excerpt') ? undefined : nested));
+}
+
+function correctionRetryFeedback(error, evidenceId) {
+  return `The controller rejected the proposed correction with: ${error}. Failed attempt evidence: ${evidenceId}. Submit one new correction_verification request with a valid Git unified diff, or continue without correction verification. Do not assume the patch was applied.`;
+}
+
+function quarantineInvalidReportPatch(report, error, evidenceId) {
+  const unverified = Array.isArray(report.unverified) ? [...report.unverified] : [];
+  unverified.push(`Correction proposal was not verified: the controller rejected the model patch (${evidenceId}: ${error}).`);
+  return { ...report, proposed_patch: null, unverified };
 }
 
 async function runInvestigation({ binary, cwd, basePrompt, requestSchema, reportSchema, registry, checkout, timeoutMs, runner }) {
@@ -398,12 +412,39 @@ async function runInvestigation({ binary, cwd, basePrompt, requestSchema, report
   const partialPaths = new Set();
   const omittedLargeFiles = new Set();
   const searchCoverage = [];
+  let correctionRetryUsed = false;
   for (let round = 1; round <= MAX_INVESTIGATION_ROUNDS; round += 1) {
     const responsePath = join(cwd, `codex-investigation-${round}.json`);
     const remaining = deadlineAt - Date.now();
     if (remaining <= 0) throw new Error('Investigation deadline exceeded before the next model round');
     await runCodex({ binary, args: buildCodexArgs({ mode: 'inspect', schema: requestSchema, responsePath }), cwd, prompt: investigationPrompt(basePrompt, registry, round, history), timeoutMs: Math.min(timeoutMs, remaining) });
-    const response = validateInvestigationResponse(JSON.parse(readFileSync(responsePath, 'utf8')), registry);
+    const rawResponse = JSON.parse(readFileSync(responsePath, 'utf8'));
+    let response;
+    try {
+      response = validateInvestigationResponse(rawResponse, registry);
+    } catch (error) {
+      let invalidPatch = null;
+      try {
+        validateInvestigationResponse(rawResponse, registry, { allowInvalidCorrectionPatch: true });
+        invalidPatch = findInvalidCorrectionPatch(rawResponse, registry);
+      } catch {
+        throw error;
+      }
+      if (!invalidPatch) throw error;
+      const attemptEvidenceId = captureEvidence(registry, {
+        type: 'model_request', action: 'investigation_round', round, outcome: 'failed_validation',
+        requests: rawResponse.requests, validation_error: invalidPatch.error, invalid_request_index: invalidPatch.index,
+      });
+      const feedback = correctionRetryFeedback(invalidPatch.error, attemptEvidenceId);
+      const feedbackEvidenceId = captureEvidence(registry, {
+        type: 'controller_validation', action: 'validation_feedback', round, outcome: correctionRetryUsed ? 'retry_exhausted' : 'retry_requested',
+        model_request_evidence_id: attemptEvidenceId, validation_error: invalidPatch.error, feedback,
+      });
+      history.push({ round, action: 'request_rejected', request_evidence_id: attemptEvidenceId, feedback_evidence_id: feedbackEvidenceId, validation_error: invalidPatch.error, controller_feedback: feedback });
+      if (correctionRetryUsed) break;
+      correctionRetryUsed = true;
+      continue;
+    }
     const requestEvidenceId = captureEvidence(registry, {
       type: 'model_request', action: 'investigation_round', round, rationale: response.rationale, requests: response.requests, outcome: response.action,
     });
@@ -423,8 +464,38 @@ async function runInvestigation({ binary, cwd, basePrompt, requestSchema, report
   const responsePath = join(cwd, 'codex-final-report.json');
   const remaining = deadlineAt - Date.now();
   if (remaining <= 0) throw new Error('Investigation deadline exceeded before the final report');
-  await runCodex({ binary, args: buildCodexArgs({ mode: 'inspect', schema: reportSchema, responsePath }), cwd, prompt: finalInvestigationPrompt(basePrompt, registry, history), timeoutMs: Math.min(timeoutMs, remaining) });
-  return { report: JSON.parse(readFileSync(responsePath, 'utf8')), history, coverage: { follow_up_read_files: [...retrievedPaths], follow_up_complete_files: [...retrievedPaths].filter(path => !partialPaths.has(path)), follow_up_partial_files: [...partialPaths], follow_up_omitted_files: [...omittedLargeFiles], follow_up_searches: searchCoverage, follow_up_bytes_examined: retrievalBytesUsed, follow_up_byte_budget: 128 * 1024 } };
+  let reportRetryUsed = false;
+  let report = null;
+  let reportFeedback = null;
+  while (true) {
+    const remainingForReport = deadlineAt - Date.now();
+    if (remainingForReport <= 0) throw new Error('Investigation deadline exceeded before the final report');
+    await runCodex({ binary, args: buildCodexArgs({ mode: 'inspect', schema: reportSchema, responsePath }), cwd, prompt: finalInvestigationPrompt(basePrompt, registry, history, reportFeedback), timeoutMs: Math.min(timeoutMs, remainingForReport) });
+    report = JSON.parse(readFileSync(responsePath, 'utf8'));
+    if (!report.proposed_patch) break;
+    try {
+      validateProposedPatch(report.proposed_patch);
+      break;
+    } catch (error) {
+      const attemptEvidenceId = captureEvidence(registry, {
+        type: 'model_report', action: 'model_output', outcome: 'failed_validation',
+        content: report, validation_error: error.message,
+      });
+      const feedbackEvidenceId = captureEvidence(registry, {
+        type: 'controller_validation', action: 'validation_feedback', outcome: reportRetryUsed ? 'retry_exhausted' : 'retry_requested',
+        model_report_evidence_id: attemptEvidenceId, validation_error: error.message,
+        feedback: `The proposed_patch field failed validation: ${error.message}. A proposed patch in a final report is never executed automatically.`,
+      });
+      history.push({ action: 'final_report_rejected', report_evidence_id: attemptEvidenceId, feedback_evidence_id: feedbackEvidenceId, validation_error: error.message });
+      if (reportRetryUsed) {
+        report = quarantineInvalidReportPatch(report, error.message, attemptEvidenceId);
+        break;
+      }
+      reportRetryUsed = true;
+      reportFeedback = `The proposed_patch field failed validation: ${error.message}. The failed report is recorded as ${attemptEvidenceId}. A proposed patch in a final report is never executed automatically.`;
+    }
+  }
+  return { report, history, coverage: { follow_up_read_files: [...retrievedPaths], follow_up_complete_files: [...retrievedPaths].filter(path => !partialPaths.has(path)), follow_up_partial_files: [...partialPaths], follow_up_omitted_files: [...omittedLargeFiles], follow_up_searches: searchCoverage, follow_up_bytes_examined: retrievalBytesUsed, follow_up_byte_budget: 128 * 1024 } };
 }
 
 function mergeInvestigationCoverage(coverage, investigationCoverage) {

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createEvidenceRegistry, captureEvidence } from '../src/evidence.mjs';
-import { processInvestigationRequests, validateInvestigationResponse, validateProposedPatch, MAX_RETRIEVAL_BYTES } from '../src/investigation.mjs';
+import { processInvestigationRequests, validateInvestigationResponse, findInvalidCorrectionPatch, validateProposedPatch, MAX_RETRIEVAL_BYTES } from '../src/investigation.mjs';
 
 test('validates bounded investigation requests and rejects unsafe controls', () => {
   const registry = createEvidenceRegistry({ source: 'fixture', commit: 'abc' });
@@ -129,4 +129,16 @@ test('patch validation is limited to safe repository-relative unified diffs', ()
 test('schema-valid null correction patches remain policy-gated instead of being rejected as malformed', () => {
   const registry = createEvidenceRegistry({ source: 'fixture', commit: 'abc' });
   assert.doesNotThrow(() => validateInvestigationResponse({ action: 'request', rationale: 'Need a correction decision.', requests: [{ type: 'correction_verification', query: null, paths: null, evidence_ids: null, experiment: null, reason: 'No patch was proposed.', patch: null, continuation: null, ranges: null }] }, registry));
+});
+
+test('malformed correction patches remain strict by default but can produce bounded retry diagnostics', () => {
+  const registry = createEvidenceRegistry({ source: 'fixture', commit: 'abc' });
+  const response = { action: 'request', rationale: 'Verify the proposed correction.', requests: [{
+    type: 'correction_verification', reason: 'Run the correction checks.', patch: '--- a/app.mjs\n+++ b/app.mjs\n@@\n-old\n+new',
+  }] };
+  assert.throws(() => validateInvestigationResponse(response, registry), /unified-diff git header/);
+  assert.doesNotThrow(() => validateInvestigationResponse(response, registry, { allowInvalidCorrectionPatch: true }));
+  assert.deepEqual(findInvalidCorrectionPatch(response, registry), {
+    index: 0, patch: response.requests[0].patch, error: 'Proposed patch must contain a unified-diff git header',
+  });
 });
