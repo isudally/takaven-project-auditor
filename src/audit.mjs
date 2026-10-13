@@ -618,7 +618,7 @@ async function main(){
     if (runtimeHandoff.contradictions.length > 0) {
       captureEvidence(registry, { type: 'model_runtime_contradiction', action: 'controller_validation', outcome: 'failed_attempt', model_report_evidence_id: modelReportEvidenceId, contradictions: runtimeHandoff.contradictions });
     }
-    validateReport(runtimeHandoff.report,{mode:args.mode,evidenceRegistry:registry,requireEvidenceIds:args.mode === 'verify' || Boolean(args.investigate)});
+    validateReport(runtimeHandoff.report,{mode:args.mode,evidenceRegistry:registry,requireEvidenceIds:true});
     if (args.investigate && runtimeHandoff.report.proposed_patch) {
       const patch = validateProposedPatch(runtimeHandoff.report.proposed_patch);
       captureEvidence(registry, { type: 'proposed_patch', action: 'model_output', outcome: 'captured_not_applied', paths: patch.paths, patch: modelReport.proposed_patch });

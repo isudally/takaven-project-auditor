@@ -56,3 +56,52 @@ test('source records, imports, and wrong patch identity cannot produce runtime P
   assert.equal(result.eligible_evidence_ids.length, 0);
   assert.ok(result.contradictions.length > 0);
 });
+
+test('contradictory or incomplete controller records remain unverified', () => {
+  const cases = [
+    { outcome: 'failed', exit_code: 0, execution_verified: true },
+    { outcome: 'passed', exit_code: 7, execution_verified: true },
+    { outcome: 'passed', exit_code: 0, ui_passed: false, execution_verified: true },
+    { outcome: 'passed', exit_code: 0, execution_verified: false },
+    { outcome: 'timed_out', exit_code: 0, ui_passed: true, execution_verified: true },
+  ];
+  for (const record of cases) {
+    const registry = createEvidenceRegistry({ source: 'fixture', commit: 'trusted-commit', scenario: 'web-proof' });
+    captureEvidence(registry, { type: 'runner_execution', operation: 'browser_smoke', ...record });
+    const result = applyControllerRuntimeResults({ ...baseReport, runtime_status: 'PASS' }, registry, { scenario: 'web-proof' });
+    assert.notEqual(result.report.runtime_status, 'PASS', JSON.stringify(record));
+    assert.equal(result.report.runtime_status, 'NOT RUN', JSON.stringify(record));
+    assert.equal(result.eligible_evidence_ids.length, 0, JSON.stringify(record));
+  }
+});
+
+test('controller runtime facts cannot be replaced by model-authored descriptions', () => {
+  const registry = createEvidenceRegistry({ source: 'fixture', commit: 'trusted-commit', scenario: 'web-proof', requiredChecks: ['build'] });
+  const evidenceId = captureEvidence(registry, {
+    type: 'runner_execution',
+    operation: 'build',
+    command: 'node trusted-build.mjs',
+    observation: 'Controller captured build output.',
+    negative_control: 'Controller negative control: unavailable.',
+    execution_verified: true,
+    outcome: 'passed',
+    exit_code: 0,
+  });
+  const model = {
+    ...baseReport,
+    runtime_evidence: [{
+      check: 'build', status: 'PASS', command: 'model-invented-command',
+      observation: 'model-invented-observation', negative_control: 'model-invented-control', evidence_ids: [evidenceId],
+    }],
+  };
+  const result = applyControllerRuntimeResults(model, registry, { scenario: 'web-proof' });
+  assert.deepEqual(result.report.runtime_evidence[0], {
+    check: 'build',
+    status: 'PASS',
+    command: 'node trusted-build.mjs',
+    observation: 'Controller captured build output.',
+    negative_control: 'Controller negative control: unavailable.',
+    evidence_ids: [evidenceId],
+  });
+  assert.doesNotMatch(JSON.stringify(result.report.runtime_evidence), /model-invented/);
+});

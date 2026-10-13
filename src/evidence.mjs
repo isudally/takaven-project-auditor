@@ -74,6 +74,37 @@ export function validateEvidenceIds(ids, registry, field = 'evidence_ids') {
   return ids;
 }
 
+// A runtime record must have one coherent controller-observed outcome. In
+// particular, a zero exit code or positive UI flag must never override an
+// explicit failure, timeout, signal, spawn error, or negative UI assertion.
+export function deriveRuntimeEvidenceStatus(record) {
+  if (!record || record.execution_verified !== true) return null;
+
+  const exitSucceeded = record.exit_code === 0;
+  const exitFailed = Number.isInteger(record.exit_code) && record.exit_code !== 0;
+  const uiSucceeded = record.ui_passed === true;
+  const uiFailed = record.ui_passed === false;
+  const timedOut = record.timed_out === true || record.timeout === true || record.outcome === 'timed_out';
+  const hasLaunchFailure = Boolean(record.spawn_error) || record.signal !== undefined && record.signal !== null;
+
+  if (record.outcome === 'passed') {
+    if (exitFailed || uiFailed || timedOut || hasLaunchFailure) return null;
+    return 'PASS';
+  }
+
+  if (record.outcome === 'failed') {
+    if (exitSucceeded || uiSucceeded || timedOut) return null;
+    return 'FAIL';
+  }
+
+  if (record.outcome === 'partial' || record.outcome === 'timed_out') {
+    if (exitSucceeded && uiSucceeded) return null;
+    return 'PARTIAL';
+  }
+
+  return null;
+}
+
 export function isEligibleRuntimeEvidence(registry, id, { status, source, commit, scenario = registry?.scenario, patchHash } = {}) {
   if (!hasEvidence(registry, id)) return false;
   const record = registry.records.find(item => item.evidence_id === id);
@@ -83,11 +114,7 @@ export function isEligibleRuntimeEvidence(registry, id, { status, source, commit
   if (scenario !== undefined && record.scenario !== scenario) return false;
   if (patchHash !== undefined && record.patch_hash !== patchHash) return false;
   if (!['executed_command', 'browser_execution', 'runner_execution'].includes(record.type)) return false;
-  if (record.execution_verified !== true) return false;
-  if (status === 'PASS') return record.outcome === 'passed' || record.exit_code === 0 || record.ui_passed === true;
-  if (status === 'FAIL') return record.outcome === 'failed' || (Number.isInteger(record.exit_code) && record.exit_code !== 0) || record.ui_passed === false;
-  if (status === 'PARTIAL') return record.outcome === 'partial' || record.outcome === 'timed_out';
-  return false;
+  return deriveRuntimeEvidenceStatus(record) === status;
 }
 
 export function serialiseEvidenceRegistry(registry, { includeInitialContent = true } = {}) {

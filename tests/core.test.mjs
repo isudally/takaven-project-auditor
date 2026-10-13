@@ -94,6 +94,15 @@ test('investigation mode requires controller-owned evidence IDs',()=>{
   assert.throws(()=>validateReport({...report,findings:[{...report.findings[0],evidence_ids:['ev-0000000000000000']}]},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true}),/unknown evidence ID/);
   assert.throws(()=>validateReport({...report,findings:[{...report.findings[0],evidence_type:'UNKNOWN',evidence_ids:['ev-0000000000000000']}]},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true}),/unknown evidence ID/);
 });
+test('strict inspection validation rejects observed and inferred findings without controller evidence',()=>{
+  const registry = createEvidenceRegistry({source:'fixture',commit:'abc'});
+  for (const evidenceType of ['OBSERVED', 'INFERRED']) {
+    const report = {...sample,commit:'abc',runtime_status:'NOT RUN',runtime_evidence:[],findings:[{...sample.findings[0],evidence_type:evidenceType}]};
+    assert.throws(()=>validateReport(report,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true}),/evidence_ids must contain at least one evidence ID/);
+  }
+  const unknown = {...sample,commit:'abc',runtime_status:'NOT RUN',runtime_evidence:[],findings:[{...sample.findings[0],evidence_type:'UNKNOWN'}]};
+  assert.doesNotThrow(()=>validateReport(unknown,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true}));
+});
 test('accepts a model patch as data without treating it as controller evidence',()=>{
   const report = {...sample, proposed_patch:'--- a/src/app.js\n+++ b/src/app.js\n@@\n-x\n+y'};
   assert.equal(validateReport(report).proposed_patch.includes('src/app.js'),true);
