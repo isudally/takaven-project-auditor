@@ -258,9 +258,10 @@ jobs:
           let interactionError = null;
           let uiRendered = false;
           let interactiveElementCount = 0;
+          let screenshotCaptured = false;
+          let screenshotError = null;
           try {
             response = await page.goto('http://127.0.0.1:4173/', { waitUntil: 'networkidle', timeout: 60000 });
-            await page.screenshot({ path: 'runtime-proof/playkin/playkin.png', fullPage: true });
             uiRendered = await page.locator('#root').evaluate(element => Boolean(element?.textContent?.trim()));
             interactiveElementCount = await page.locator('button').count();
             if (uiRendered && pageErrors.length === 0) {
@@ -271,6 +272,12 @@ jobs:
           } catch (error) {
             if (!response) navigationError = String(error);
             else interactionError = String(error);
+          }
+          try {
+            await page.screenshot({ path: 'runtime-proof/playkin/playkin.png', fullPage: true });
+            screenshotCaptured = true;
+          } catch (error) {
+            screenshotError = String(error);
           }
           const result = {
             repository: 'isudally/playkin',
@@ -288,6 +295,8 @@ jobs:
             interaction_error: interactionError,
             ui_rendered: uiRendered,
             interactive_element_count: interactiveElementCount,
+            screenshot_captured: screenshotCaptured,
+            screenshot_error: screenshotError,
             screenshot: 'runtime-proof/playkin/playkin.png',
             browser: 'Chromium 1.52.0',
           };
@@ -304,7 +313,15 @@ jobs:
           import { applyTrustedMetadata, renderMarkdown, validateReport } from './src/core.mjs';
 
           const evidence = JSON.parse(readFileSync('runtime-proof/playkin/smoke.json', 'utf8'));
-          const failed = !evidence.http_ok || evidence.page_errors.length > 0 || evidence.navigation_error || !evidence.ui_rendered || !evidence.interaction?.passed;
+          const failed = !evidence.http_ok
+            || evidence.page_errors.length > 0
+            || evidence.console_errors.length > 0
+            || evidence.navigation_error
+            || evidence.interaction_error
+            || !evidence.ui_rendered
+            || evidence.interactive_element_count < 1
+            || !evidence.interaction?.passed
+            || !evidence.screenshot_captured;
           const report = validateReport({
             project: 'playkin',
             commit: 'controller-owned-placeholder',
@@ -356,6 +373,7 @@ jobs:
             mode: 'verify',
             timestamp: trusted.audited_at,
           }));
+          if (failed) process.exitCode = 1;
           NODE
 
       - name: Upload Playkin evidence and report
