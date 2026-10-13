@@ -75,6 +75,6 @@
     "next_actions": {"type": "array", "items": {"type": "string"}},
     "proposed_patch": {"type": ["string", "null"]}
   },
-  "required": ["project", "commit", "verdict", "executive_summary", "runtime_status", "runtime_evidence", "findings", "reuse_assessment", "commercial_risks", "unverified", "next_actions", "proposed_patch"],
+  "required": ["project", "commit", "verdict", "executive_summary", "runtime_status", "runtime_evidence", "findings", "product_assessment", "reuse_assessment", "commercial_risks", "unverified", "next_actions", "proposed_patch"],
   "additionalProperties": false
 }

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { parseArgs, normalizeGithub, validateGitRef, validateReport, renderMarkdown, promptForRun, applyTrustedMetadata, validateProjectBrief } from '../src/core.mjs';
 import { buildCodexArgs, resolveCodexCommand } from '../src/audit.mjs';
 import { createEvidenceRegistry, captureEvidence, redactEvidenceText } from '../src/evidence.mjs';
+import { readFileSync } from 'node:fs';
 
 const sample = {project:'demo',commit:'123',verdict:'MODIFY',executive_summary:'Build is broken.',runtime_status:'FAIL',runtime_evidence:[{check:'web boot',status:'FAIL',command:'npm test',observation:'TypeError',negative_control:'not required'}],findings:[{title:'Boot fails',severity:'HIGH',evidence_type:'OBSERVED',evidence:'startup exception',location:'src/app.js:10',recommended_fix:'fix token'}],reuse_assessment:['reuse templates'],commercial_risks:['no buyer evidence'],unverified:['sales'],next_actions:['fix boot']};
 
@@ -20,6 +21,10 @@ test('validates an owner project brief without treating repository text as requi
   assert.throws(()=>validateProjectBrief({...brief,unexpected:'requirement'}),/Unexpected project brief field/);
 });
 test('Codex automation uses an ephemeral session under the controller sandbox',()=>assert.ok(buildCodexArgs({mode:'inspect',schema:'schema.json',responsePath:'response.json'}).includes('--ephemeral')));
+test('Codex report schema requires every declared top-level property',()=>{
+  const schema=JSON.parse(readFileSync(new URL('../report.schema.json',import.meta.url),'utf8'));
+  assert.deepEqual([...Object.keys(schema.properties)].sort(),[...schema.required].sort());
+});
 test('accepts safe Git references and rejects option-like or malformed references',()=>{
   assert.equal(validateGitRef('refs/heads/feature/a'), 'refs/heads/feature/a');
   assert.equal(parseArgs(['--repo','https://github.com/a/b','--ref','v1.2.3']).ref, 'v1.2.3');
