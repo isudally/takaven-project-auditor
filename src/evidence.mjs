@@ -105,16 +105,22 @@ export function deriveRuntimeEvidenceStatus(record) {
   const browserCheck = record.type === 'browser_execution' || record.operation === 'browser_smoke' || record.check === 'browser_smoke';
 
   if (record.outcome === 'passed') {
+    if (browserCheck && record.ui_passed === false) return 'FAIL';
+    if (browserCheck && record.ui_passed !== true) return exitSucceeded && !exitFailed && !timedOut && !hasLaunchFailure ? 'PARTIAL' : null;
     if ((!exitSucceeded && !uiSucceeded) || browserCheck && !uiSucceeded || exitFailed || uiFailed || timedOut || hasLaunchFailure) return null;
     return 'PASS';
   }
 
   if (record.outcome === 'failed') {
+    if (uiFailed && !timedOut && !hasLaunchFailure) return 'FAIL';
     if (exitSucceeded || uiSucceeded || timedOut) return null;
     return 'FAIL';
   }
 
-  if (record.outcome === 'partial' || record.outcome === 'timed_out') {
+  if (record.outcome === 'timed_out') return 'PARTIAL';
+
+  if (record.outcome === 'partial') {
+    if (uiFailed) return 'FAIL';
     if (exitSucceeded && uiSucceeded) return null;
     return 'PARTIAL';
   }

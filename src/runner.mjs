@@ -1,7 +1,7 @@
-import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync, existsSync, realpathSync, mkdirSync, rmSync, cpSync, readdirSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { readFileSync, writeFileSync, existsSync, realpathSync, mkdirSync, rmSync, cpSync, readdirSync, lstatSync, unlinkSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
-import { join, resolve, sep } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { captureEvidence, redactEvidenceText } from './evidence.mjs';
 
 const ALLOWED_EXECUTABLES = new Set(['node', 'npm', 'npx', 'python', 'python3', 'pnpm', 'yarn', 'go', 'cargo', 'pytest']);
@@ -9,6 +9,8 @@ const WINDOWS_SHIMS = new Set(['npm', 'npx', 'pnpm', 'yarn']);
 const SENSITIVE_ENV = /(?:token|secret|password|private|credential|api[_-]?key)/i;
 const COMMAND_OPERATIONS = ['setup', 'build', 'declared_test', 'server', 'browser_smoke'];
 export const ACCEPTANCE_OPERATIONS = ['build', 'declared_test', 'browser_smoke'];
+const BROWSER_ASSERTION_MAX_BYTES = 4096;
+const BROWSER_ASSERTION_KEYS = ['execution_id', 'ui_passed', 'version'];
 
 export function requiredChecksForConfig(config) {
   const configured = ACCEPTANCE_OPERATIONS.filter(operation => Boolean(config?.[operation]));
@@ -69,12 +71,13 @@ function resolveWorkingDirectory(checkout, value = '.') {
   return cwd;
 }
 
-function runnerEnv(config) {
+function runnerEnv(config, extra = {}) {
   const env = { CI: 'true', PATH: process.env.PATH, Path: process.env.Path, NODE_ENV: 'test' };
   for (const [key, value] of Object.entries(config.env ?? {})) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || SENSITIVE_ENV.test(key) || typeof value !== 'string') throw new Error(`Runner environment variable is not allowed: ${key}`);
     env[key] = value;
   }
+  Object.assign(env, extra);
   return env;
 }
 
@@ -87,7 +90,54 @@ function errorRecord(error) {
   return { name: error.name, code: error.code, message: error.message, errno: error.errno, syscall: error.syscall };
 }
 
-function runCommand({ operation, spec, checkout, registry, timeoutMs }) {
+function validateBrowserAssertionConfig(assertion) {
+  if (assertion === undefined) return;
+  if (!assertion || typeof assertion !== 'object' || Array.isArray(assertion)) throw new Error('Browser assertion must be an object');
+  const keys = Object.keys(assertion).sort();
+  if (keys.length !== 1 || keys[0] !== 'path') throw new Error('Browser assertion must contain only path');
+  if (typeof assertion.path !== 'string' || assertion.path.length === 0 || assertion.path.length > 260 || assertion.path.includes('\0')) throw new Error('Browser assertion path is invalid');
+  if (/^(?:[A-Za-z]:[\\/]|[\\/])/.test(assertion.path) || assertion.path.split(/[\\/]/).some(part => part === '..' || part === '')) throw new Error('Browser assertion path must be relative and traversal-free');
+}
+
+function prepareBrowserAssertion(checkout, spec) {
+  validateBrowserAssertionConfig(spec.assertion);
+  if (!spec.assertion) return null;
+  const root = realpathSync(checkout);
+  const relativePath = spec.assertion.path.replaceAll('\\', '/');
+  const absolutePath = resolve(root, relativePath);
+  const parent = dirname(absolutePath);
+  mkdirSync(parent, { recursive: true });
+  const realParent = realpathSync(parent);
+  if (realParent !== root && !realParent.startsWith(`${root}${sep}`)) throw new Error('Browser assertion path escapes checkout through a symlink');
+  if (existsSync(absolutePath)) {
+    const existing = lstatSync(absolutePath);
+    if (existing.isSymbolicLink()) throw new Error('Browser assertion path must not be a symlink');
+    if (!existing.isFile()) throw new Error('Browser assertion path must identify a regular file');
+    unlinkSync(absolutePath);
+  }
+  return { executionId: randomUUID(), relativePath, absolutePath };
+}
+
+function readBrowserAssertion(context) {
+  if (!context) return { status: 'not_configured', error: 'No controller-configured UI assertion was provided.' };
+  if (!existsSync(context.absolutePath)) return { status: 'missing', error: 'Controller-configured UI assertion was not produced.' };
+  const stat = lstatSync(context.absolutePath);
+  if (stat.isSymbolicLink() || !stat.isFile()) return { status: 'invalid', error: 'Controller-configured UI assertion is not a regular file.' };
+  if (stat.size > BROWSER_ASSERTION_MAX_BYTES) return { status: 'invalid', error: `Controller-configured UI assertion exceeds ${BROWSER_ASSERTION_MAX_BYTES} bytes.` };
+  const content = readFileSync(context.absolutePath);
+  const fileHash = sha256(content);
+  let value;
+  try { value = JSON.parse(content.toString('utf8')); } catch { return { status: 'invalid', error: 'Controller-configured UI assertion is not valid JSON.', fileHash }; }
+  if (!value || typeof value !== 'object' || Array.isArray(value) || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(BROWSER_ASSERTION_KEYS)) {
+    return { status: 'invalid', error: 'Controller-configured UI assertion has an unexpected schema.', fileHash };
+  }
+  if (value.version !== 1 || value.execution_id !== context.executionId || typeof value.ui_passed !== 'boolean') {
+    return { status: 'invalid', error: 'Controller-configured UI assertion has an invalid version, execution ID or ui_passed value.', fileHash };
+  }
+  return { status: 'valid', executionId: value.execution_id, ui_passed: value.ui_passed, fileHash, bytes: content.byteLength };
+}
+
+function runCommand({ operation, spec, checkout, registry, timeoutMs, executionContext = null }) {
   validateCommand(spec.command, operation);
   const cwd = resolveWorkingDirectory(checkout, spec.cwd ?? '.');
   const requestedCommand = spec.command.map(item => expand(item, checkout));
@@ -97,7 +147,7 @@ function runCommand({ operation, spec, checkout, registry, timeoutMs }) {
   const startedAt = new Date().toISOString();
   const start = process.hrtime.bigint();
   const result = spawnSync(invocation.file, invocation.args, {
-    cwd, env: runnerEnv(spec), encoding: 'utf8', shell: false,
+    cwd, env: runnerEnv(spec, executionContext?.env ?? {}), encoding: 'utf8', shell: false,
     timeout: timeoutMs, windowsHide: true, maxBuffer: 2 * 1024 * 1024,
   });
   const durationMs = Number(process.hrtime.bigint() - start) / 1e6;
@@ -108,11 +158,28 @@ function runCommand({ operation, spec, checkout, registry, timeoutMs }) {
   const signal = result.signal ?? null;
   const stdout = redactEvidenceText(result.stdout ?? '');
   const stderr = redactEvidenceText(result.stderr ?? '');
-  const outcome = timedOut ? 'timed_out' : launchFailed ? 'launch_failed' : exitCode === 0 ? 'passed' : 'failed';
-  const observation = launchFailed
+  const assertion = operation === 'browser_smoke' && !launchFailed && !timedOut
+    ? readBrowserAssertion(executionContext?.assertion ?? null)
+    : null;
+  let finalOutcome = timedOut ? 'timed_out' : launchFailed ? 'launch_failed' : exitCode === 0 ? 'passed' : 'failed';
+  let finalObservation = launchFailed
     ? `Command failed to start: ${result.error?.code ?? 'unknown spawn error'}.`
     : timedOut ? `Command timed out after ${timeoutMs} ms.`
       : `Command started and exited with status ${exitCode}${signal ? ` (${signal})` : ''}.`;
+  if (operation === 'browser_smoke' && !launchFailed && !timedOut) {
+    if (assertion?.status === 'valid') {
+      if (!assertion.ui_passed) {
+        finalOutcome = 'failed';
+        finalObservation = 'Browser execution completed, but the controller-configured UI assertion failed.';
+      } else if (exitCode !== 0) {
+        finalOutcome = 'partial';
+        finalObservation = 'The controller-configured UI assertion passed, but the browser command exited unsuccessfully.';
+      }
+    } else if (exitCode === 0) {
+      finalOutcome = 'partial';
+      finalObservation = 'Browser execution completed successfully, but the controller did not obtain a valid UI assertion, so application behavior is not verified.';
+    }
+  }
   const evidenceId = captureEvidence(registry, {
     type: 'runner_execution', action: 'approved_runner', operation,
     command: [executable, ...args].join(' '), requested_command: requestedCommand.join(' '),
@@ -121,9 +188,18 @@ function runCommand({ operation, spec, checkout, registry, timeoutMs }) {
     status: result.status ?? null, exit_code: exitCode, signal,
     spawn_error: errorRecord(result.error), stdout, stderr,
     stdout_hash: sha256(stdout), stderr_hash: sha256(stderr),
-    outcome, observation, execution_verified: started, timeout_ms: timeoutMs,
+    outcome: finalOutcome, observation: finalObservation, execution_verified: started, timeout_ms: timeoutMs,
+    ...(assertion ? {
+      assertion_status: assertion.status,
+      assertion_execution_id: assertion.executionId ?? executionContext?.assertion?.executionId ?? null,
+      assertion_path: executionContext?.assertion?.relativePath ?? null,
+      assertion_hash: assertion.fileHash ?? null,
+      assertion_bytes: assertion.bytes ?? null,
+      assertion_error: assertion.error ?? null,
+      ui_passed: assertion.ui_passed,
+    } : {}),
   });
-  return { evidence_id: evidenceId, outcome, exit_code: exitCode, signal, started, duration_ms: Math.round(durationMs), stdout, stderr, executable, arguments: args, cwd };
+  return { evidence_id: evidenceId, outcome: finalOutcome, exit_code: exitCode, signal, started, duration_ms: Math.round(durationMs), stdout, stderr, executable, arguments: args, cwd, ui_passed: assertion?.ui_passed };
 }
 
 function terminateProcessTree(child) {
@@ -161,8 +237,33 @@ function waitForServer(child, spec, timeoutMs) {
   return false;
 }
 
+function runBrowserCommand({ spec, checkout, registry, timeoutMs }) {
+  let assertion = null;
+  try {
+    assertion = prepareBrowserAssertion(checkout, spec);
+  } catch (error) {
+    return {
+      evidence_id: captureEvidence(registry, {
+        type: 'runner_execution', action: 'approved_runner', operation: 'browser_smoke',
+        outcome: 'not_available',
+        observation: `Browser check was not started because the controller could not prepare its assertion: ${error.message}`,
+        execution_verified: false, assertion_status: 'invalid', assertion_error: error.message,
+      }),
+      outcome: 'not_available', exit_code: null,
+    };
+  }
+  const executionContext = assertion ? {
+    assertion,
+    env: {
+      TAKAVEN_BROWSER_EXECUTION_ID: assertion.executionId,
+      TAKAVEN_BROWSER_ASSERTION_PATH: assertion.absolutePath,
+    },
+  } : null;
+  return runCommand({ operation: 'browser_smoke', spec, checkout, registry, timeoutMs, executionContext });
+}
+
 function runBrowserSmoke({ spec, checkout, registry, timeoutMs }) {
-  if (!spec.server) return runCommand({ operation: 'browser_smoke', spec, checkout, registry, timeoutMs });
+  if (!spec.server) return runBrowserCommand({ spec, checkout, registry, timeoutMs });
   validateCommand(spec.server.command, 'server');
   const serverCwd = resolveWorkingDirectory(checkout, spec.server.cwd ?? '.');
   const serverCommand = spec.server.command.map(item => expand(item, checkout));
@@ -194,9 +295,11 @@ function runBrowserSmoke({ spec, checkout, registry, timeoutMs }) {
   });
   let browserResult;
   try {
-    browserResult = ready
-      ? runCommand({ operation: 'browser_smoke', spec, checkout, registry, timeoutMs })
-      : { evidence_id: captureEvidence(registry, { type: 'runner_execution', action: 'approved_runner', operation: 'browser_smoke', outcome: 'not_available', observation: 'Browser check was not started because the approved server was not ready.', execution_verified: false }), outcome: 'not_available', exit_code: null };
+    if (!ready) {
+      browserResult = { evidence_id: captureEvidence(registry, { type: 'runner_execution', action: 'approved_runner', operation: 'browser_smoke', outcome: 'not_available', observation: 'Browser check was not started because the approved server was not ready.', execution_verified: false }), outcome: 'not_available', exit_code: null };
+    } else {
+      browserResult = runBrowserCommand({ spec, checkout, registry, timeoutMs });
+    }
   } finally {
     terminateProcessTree(server);
   }
@@ -351,6 +454,9 @@ function validateConfig(config) {
     validateCommand(spec.command, operation);
     runnerEnv(spec);
     if (spec.cwd !== undefined && typeof spec.cwd !== 'string') throw new Error(`Runner cwd must be a string for ${operation}`);
+    if (operation === 'browser_smoke') {
+      validateBrowserAssertionConfig(spec.assertion);
+    }
     if (operation === 'browser_smoke' && spec.server) {
       validateCommand(spec.server.command, 'server');
       runnerEnv(spec.server);

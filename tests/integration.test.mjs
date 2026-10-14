@@ -138,6 +138,29 @@ function executionHandoffScenario(){
   } finally {rmSync(tmp,{recursive:true,force:true});}
 }
 
+function browserAcceptanceHandoffScenario(){
+  const tmp=makeTemp('auditor-browser-handoff-test');
+  try{
+    const source=initFixture(tmp);
+    const browserScript=join(source,'browser-check.mjs');
+    writeFileSync(browserScript, `import { writeFileSync } from 'node:fs';\nwriteFileSync(process.env.TAKAVEN_BROWSER_ASSERTION_PATH, JSON.stringify({ version: 1, execution_id: process.env.TAKAVEN_BROWSER_EXECUTION_ID, ui_passed: true }));\n`);
+    const config=join(tmp,'runner.json');
+    writeFileSync(config, JSON.stringify({version:1,scenario:'fixture-browser',required_checks:['browser_smoke'],browser_smoke:{command:['node',browserScript],assertion:{path:'.controller/ui-assertion.json'}}}));
+    const out=join(tmp,'report');
+    const result=run(process.execPath,[join(project,'src','audit.mjs'),'--path',source,'--mode','verify','--investigate','--runner-config',config,'--out',out],{env:{...process.env,TAKAVEN_CODEX_BIN:join(project,'tests','fake-investigator-browser.mjs'),TAKAVEN_SCRATCH_ROOT:join(tmp,'scratch')}});
+    assert.equal(result.status,0,result.stderr);
+    const report=JSON.parse(readFileSync(join(out,'report.json'),'utf8'));
+    assert.equal(report.runtime_status,'PASS');
+    assert.equal(report.runtime_evidence[0].check,'browser_smoke');
+    assert.equal(report.runtime_evidence[0].status,'PASS');
+    const evidence=JSON.parse(readFileSync(join(out,'evidence-registry.json'),'utf8'));
+    const browserRecord=evidence.registry.records.find(record=>record.operation==='browser_smoke');
+    assert.equal(browserRecord.assertion_status,'valid');
+    assert.equal(browserRecord.ui_passed,true);
+    assert.equal(typeof browserRecord.assertion_hash,'string');
+  } finally {rmSync(tmp,{recursive:true,force:true});}
+}
+
 function omittedAcceptanceCheckScenario(){
   const tmp=makeTemp('auditor-omitted-check-test');
   try{
@@ -162,5 +185,6 @@ test('controller integration scenarios', { concurrency: false }, () => {
   malformedFinalPatchScenario();
   malformedCorrectionRetryScenario();
   executionHandoffScenario();
+  browserAcceptanceHandoffScenario();
   omittedAcceptanceCheckScenario();
 });
