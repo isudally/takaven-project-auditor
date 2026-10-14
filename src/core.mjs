@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { isEligibleRuntimeEvidence, validateEvidenceIds } from './evidence.mjs';
+import { isEligibleFindingEvidence, isEligibleRuntimeEvidence, validateEvidenceIds } from './evidence.mjs';
 
 export function parseArgs(argv) {
   const result = { mode: 'inspect', out: './reports/latest', briefProvenance: 'unspecified' };
@@ -25,6 +25,7 @@ export function parseArgs(argv) {
   if (result.briefProvenance !== 'unspecified' && !result.brief) throw new Error('--brief-provenance requires --brief');
   if (result.runnerConfig) { result.runnerConfig = resolve(result.runnerConfig); if (!existsSync(result.runnerConfig)) throw new Error('Runner config file not found'); if (result.mode !== 'verify') throw new Error('--runner-config requires --mode verify'); }
   if (result.mode === 'verify' && !result.runnerConfig) throw new Error('--runner-config is required for verify mode; use inspect for static-only audits');
+  if (result.mode === 'verify' && !result.investigate) throw new Error('--investigate is required with --mode verify so execution remains controller-mediated');
   if (result.ref) result.ref = validateGitRef(result.ref);
   return result;
 }
@@ -198,7 +199,7 @@ export function validateReportWithOptions(value, { mode, evidenceRegistry, requi
     if (!['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'].includes(finding.severity)) throw new Error(`Invalid finding severity at index ${index}`);
     if (!['OBSERVED', 'INFERRED', 'UNKNOWN'].includes(finding.evidence_type)) throw new Error(`Invalid finding evidence type at index ${index}`);
     if (finding.evidence_ids !== undefined && finding.evidence_ids !== null) validateEvidenceIds(finding.evidence_ids, evidenceRegistry, `findings[${index}].evidence_ids`);
-    if (requireEvidenceIds && finding.evidence_type !== 'UNKNOWN') validateEvidenceIds(finding.evidence_ids, evidenceRegistry, `findings[${index}].evidence_ids`);
+    if (requireEvidenceIds && finding.evidence_type !== 'UNKNOWN') validateFindingEvidenceIds(finding.evidence_ids, evidenceRegistry, `findings[${index}].evidence_ids`);
   });
 
   if (value.product_assessment !== undefined) {
@@ -279,8 +280,15 @@ function requireAssessmentItems(value, field, requiredKeys, evidenceRegistry, re
     if (optionalKeys.includes('classification') && item.classification !== undefined && !['defect_remediation', 'independent_enhancement', 'validation_readiness', 'unspecified'].includes(item.classification)) {
       throw new Error(`${field}[${index}].classification must be defect_remediation, independent_enhancement, validation_readiness or unspecified`);
     }
-    if (requireEvidenceIds) validateEvidenceIds(item.evidence_ids, evidenceRegistry, `${field}[${index}].evidence_ids`);
+    if (requireEvidenceIds) validateFindingEvidenceIds(item.evidence_ids, evidenceRegistry, `${field}[${index}].evidence_ids`);
   });
+}
+
+function validateFindingEvidenceIds(ids, evidenceRegistry, field) {
+  validateEvidenceIds(ids, evidenceRegistry, field);
+  if (!ids.every(id => isEligibleFindingEvidence(evidenceRegistry, id))) {
+    throw new Error(`${field} must reference eligible controller source or execution evidence`);
+  }
 }
 
 export function promptForRun({projectName, commit, mode, contract, mission, targetPath = '[target workspace]', snapshot = '', brief = null, briefProvenance = 'unspecified'} = {}) {

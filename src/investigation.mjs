@@ -150,11 +150,10 @@ function readTextRange(absolute, start, length) {
   }
 }
 
-export function processInvestigationRequests({ requests, checkout, registry, retrievalBytesUsed = 0, runner } = {}) {
+export function processInvestigationRequests({ requests, checkout, registry, retrievalBytesUsed = 0, runner, coverageStates = new Map(), touchedPaths = new Set() } = {}) {
   const results = [];
   let retrievedBytes = retrievalBytesUsed;
   const retrievedPaths = new Set();
-  const partialPaths = new Set();
   const omittedLargeFiles = new Set();
   const searchCoverage = [];
   for (const request of requests) {
@@ -179,16 +178,19 @@ export function processInvestigationRequests({ requests, checkout, registry, ret
           const length = Math.min(range?.length ?? size, remaining);
           if (remaining <= 0 || length <= 0) throw new Error('retrieval budget exceeded');
           content = readTextRange(absolute, start, length);
-          if (start > 0 || start + Buffer.byteLength(content) < size) partialPaths.add(relativePath);
         } catch (error) {
           files.push({ path: relativePath, outcome: 'unavailable', error: error.message });
           continue;
         }
         if (content.includes('\u0000')) { files.push({ path: relativePath, outcome: 'binary_omitted' }); continue; }
+        const complete = start === 0 && start + Buffer.byteLength(content) >= size;
+        if (complete) coverageStates.set(relativePath, 'complete');
+        else if (coverageStates.get(relativePath) !== 'complete') coverageStates.set(relativePath, 'partial');
         retrievedBytes += Buffer.byteLength(content);
         retrievedPaths.add(relativePath);
+        touchedPaths.add(relativePath);
         const evidenceId = captureSource(registry, relativePath, content, 'source_read');
-        files.push({ path: relativePath, evidence_id: evidenceId, content: redactEvidenceText(content), completeness: start > 0 || start + Buffer.byteLength(content) < statSync(absolute).size ? 'partial' : 'complete' });
+        files.push({ path: relativePath, evidence_id: evidenceId, content: redactEvidenceText(content), completeness: coverageStates.get(relativePath) });
       }
       results.push({ type: request.type, files });
       continue;
@@ -212,6 +214,8 @@ export function processInvestigationRequests({ requests, checkout, registry, ret
         if (retrievedBytes + Buffer.byteLength(excerpt) > MAX_RETRIEVAL_BYTES) break;
         retrievedBytes += Buffer.byteLength(excerpt);
         retrievedPaths.add(relativePath);
+        touchedPaths.add(relativePath);
+        if (coverageStates.get(relativePath) !== 'complete') coverageStates.set(relativePath, 'partial');
         const evidenceId = captureSource(registry, relativePath, excerpt, 'source_search');
         matches.push({ path: relativePath, evidence_id: evidenceId, excerpt });
       }
@@ -239,5 +243,13 @@ export function processInvestigationRequests({ requests, checkout, registry, ret
       results.push({ type: request.type, evidence_id: evidenceId, outcome: 'rejected' });
     }
   }
-  return { results, retrievedBytes, retrievedPaths: [...retrievedPaths], partialPaths: [...partialPaths], omittedLargeFiles: [...omittedLargeFiles], searchCoverage };
+  return {
+    results,
+    retrievedBytes,
+    retrievedPaths: [...touchedPaths],
+    completePaths: [...touchedPaths].filter(path => coverageStates.get(path) === 'complete'),
+    partialPaths: [...touchedPaths].filter(path => coverageStates.get(path) === 'partial'),
+    omittedLargeFiles: [...omittedLargeFiles],
+    searchCoverage,
+  };
 }

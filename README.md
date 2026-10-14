@@ -41,8 +41,9 @@ node src/audit.mjs --repo https://github.com/isudally/playkin --mode inspect --i
 # Product context supplied separately; provenance is controller-selected and defaults to unspecified
 node src/audit.mjs --path /path/to/project --brief ./project-brief.json --brief-provenance owner-confirmed --mode inspect --investigate --out ./reports/project
 
-# Deeper audit, only with an explicit approved runner configuration and an isolated computer
-node src/audit.mjs --repo https://github.com/isudally/playkin --mode verify --runner-config ./runner-config.json --out ./reports/playkin-verified
+# Deeper audit, only with an explicit approved runner configuration and an isolated computer.
+# Verify mode requires the controller-mediated investigative loop.
+node src/audit.mjs --repo https://github.com/isudally/playkin --mode verify --investigate --runner-config ./runner-config.json --out ./reports/playkin-verified
 
 # A local Git repository also works
 node src/audit.mjs --path /path/to/project --mode inspect --out ./reports/myproject

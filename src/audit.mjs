@@ -8,11 +8,11 @@ import { spawnSync, spawn } from 'node:child_process';
 import { parseArgs, renderMarkdown, validateReport, applyTrustedMetadata, promptForRun, readProjectBrief } from './core.mjs';
 import { createEvidenceRegistry, captureEvidence, evidenceRegistryIndex, serialiseEvidenceRegistry, redactEvidenceText } from './evidence.mjs';
 import { MAX_INVESTIGATION_ROUNDS, processInvestigationRequests, validateInvestigationResponse, validateProposedPatch } from './investigation.mjs';
-import { createApprovedRunner, loadRunnerConfig } from './runner.mjs';
+import { createApprovedRunner, loadRunnerConfig, requiredChecksForConfig } from './runner.mjs';
 import { applyControllerRuntimeResults } from './runtime.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const help = `TAKAVEN Project Auditor v0.1\n\nUsage:\n  node src/audit.mjs --repo https://github.com/owner/repo [--ref main] [--brief ./project-brief.json] [--brief-provenance unspecified|owner-confirmed|repository-derived] [--mode inspect|verify] [--out ./reports/project]\n  node src/audit.mjs --path /path/to/local/git/repo [--brief ./project-brief.json] [--brief-provenance unspecified|owner-confirmed|repository-derived] [--mode inspect|verify]\n\nModes:\n  inspect (default): code and architecture only; never executes repository code\n  verify: execute tests/builds where feasible in a disposable copy, with Codex sandbox enabled\n\nBrief provenance is controller-selected metadata. The brief JSON cannot self-declare owner authority; omitted provenance is unspecified.\n\nPrerequisites: Git, Node.js >=20, Codex CLI installed and authenticated.\n\nCAUTION: The verify mode may execute repository scripts. Use only with code you trust, preferably in a separate VM/container with no production secrets. The Codex sandbox is not a substitute for a dedicated security boundary.`;
+const help = `TAKAVEN Project Auditor v0.1\n\nUsage:\n  node src/audit.mjs --repo https://github.com/owner/repo [--ref main] [--brief ./project-brief.json] [--brief-provenance unspecified|owner-confirmed|repository-derived] [--mode inspect|verify] [--out ./reports/project]\n  node src/audit.mjs --path /path/to/local/git/repo [--brief ./project-brief.json] [--brief-provenance unspecified|owner-confirmed|repository-derived] [--mode inspect|verify]\n\nModes:\n  inspect (default): code and architecture only; never executes repository code\n  verify: execute approved checks through the controller-mediated investigative path; requires --investigate\n\nBrief provenance is controller-selected metadata. The brief JSON cannot self-declare owner authority; omitted provenance is unspecified.\n\nPrerequisites: Git, Node.js >=20, Codex CLI installed and authenticated.\n\nCAUTION: The verify mode may execute repository scripts. Use only with code you trust, preferably in a separate VM/container with no production secrets. The Codex sandbox is not a substitute for a dedicated security boundary.`;
 
 function command(file, args, options={}) {
   const result=spawnSync(file,args,{encoding:'utf8',timeout:options.timeout??60000,cwd:options.cwd,env:process.env,stdio:['ignore','pipe','pipe']});
@@ -400,12 +400,12 @@ function quarantineInvalidReportPatch(report, error, evidenceId) {
   return { ...report, proposed_patch: null, unverified };
 }
 
-async function runInvestigation({ binary, cwd, basePrompt, requestSchema, reportSchema, registry, checkout, timeoutMs, runner }) {
+async function runInvestigation({ binary, cwd, basePrompt, requestSchema, reportSchema, registry, checkout, timeoutMs, runner, initialReadFiles = [] }) {
   const history = [];
   const deadlineAt = Date.now() + configuredInvestigationDeadline();
   let retrievalBytesUsed = 0;
-  const retrievedPaths = new Set();
-  const partialPaths = new Set();
+  const coverageStates = new Map(initialReadFiles.map(path => [path, 'complete']));
+  const followUpTouchedPaths = new Set();
   const omittedLargeFiles = new Set();
   const searchCoverage = [];
   for (let round = 1; round <= MAX_INVESTIGATION_ROUNDS; round += 1) {
@@ -440,10 +440,8 @@ async function runInvestigation({ binary, cwd, basePrompt, requestSchema, report
       history.push({ round, action: response.action, rationale: response.rationale, evidence_id: requestEvidenceId });
       break;
     }
-    const processed = processInvestigationRequests({ requests: response.requests, checkout, registry, retrievalBytesUsed, runner });
+    const processed = processInvestigationRequests({ requests: response.requests, checkout, registry, retrievalBytesUsed, runner, coverageStates, touchedPaths: followUpTouchedPaths });
     retrievalBytesUsed = processed.retrievedBytes;
-    for (const path of processed.retrievedPaths) retrievedPaths.add(path);
-    for (const path of processed.partialPaths ?? []) partialPaths.add(path);
     for (const path of processed.omittedLargeFiles ?? []) omittedLargeFiles.add(path);
     searchCoverage.push(...(processed.searchCoverage ?? []));
     history.push({ round, action: response.action, rationale: response.rationale, requests: response.requests, request_evidence_id: requestEvidenceId, controller_result: compactControllerResult(processed) });
@@ -483,7 +481,10 @@ async function runInvestigation({ binary, cwd, basePrompt, requestSchema, report
       reportFeedback = `The proposed_patch field failed validation: ${error.message}. The failed report is recorded as ${attemptEvidenceId}. A proposed patch in a final report is never executed automatically.`;
     }
   }
-  return { report, history, coverage: { follow_up_read_files: [...retrievedPaths], follow_up_complete_files: [...retrievedPaths].filter(path => !partialPaths.has(path)), follow_up_partial_files: [...partialPaths], follow_up_omitted_files: [...omittedLargeFiles], follow_up_searches: searchCoverage, follow_up_bytes_examined: retrievalBytesUsed, follow_up_byte_budget: 128 * 1024 } };
+  const followUpReadFiles = [...followUpTouchedPaths];
+  const followUpCompleteFiles = followUpReadFiles.filter(path => coverageStates.get(path) === 'complete');
+  const followUpPartialFiles = followUpReadFiles.filter(path => coverageStates.get(path) === 'partial');
+  return { report, history, coverage: { follow_up_read_files: followUpReadFiles, follow_up_complete_files: followUpCompleteFiles, follow_up_partial_files: followUpPartialFiles, follow_up_omitted_files: [...omittedLargeFiles], follow_up_searches: searchCoverage, follow_up_bytes_examined: retrievalBytesUsed, follow_up_byte_budget: 128 * 1024 } };
 }
 
 function mergeInvestigationCoverage(coverage, investigationCoverage) {
@@ -491,7 +492,7 @@ function mergeInvestigationCoverage(coverage, investigationCoverage) {
   const followUpCompleteSet = new Set(followUp.follow_up_complete_files ?? (followUp.follow_up_read_files ?? []).filter(path => !(followUp.follow_up_partial_files ?? []).includes(path)));
   return {
     ...coverage,
-    read_files: [...new Set([...(coverage.read_files ?? []), ...followUp.follow_up_read_files])],
+    read_files: [...new Set([...(coverage.read_files ?? []), ...(followUp.follow_up_complete_files ?? [])])],
     omitted_files: [...new Set([...(coverage.omitted_files ?? []).filter(path => !followUpCompleteSet.has(path)), ...(followUp.follow_up_omitted_files ?? [])])],
     bytes_examined: (coverage.bytes_examined ?? 0) + followUp.follow_up_bytes_examined,
     byte_budget: (coverage.byte_budget ?? 0) + followUp.follow_up_byte_budget,
@@ -585,7 +586,8 @@ async function main(){
     const mission=readFileSync(join(root,'prompts','audit.md'),'utf8');
     const snapshot=collectRepositorySnapshot(checkout);
     const runnerConfig = args.runnerConfig ? loadRunnerConfig(args.runnerConfig) : null;
-    registry = createEvidenceRegistry({ source: originalSource, commit, scenario: runnerConfig?.scenario ?? 'default', requiredChecks: runnerConfig?.required_checks ?? [], briefProvenance: args.briefProvenance });
+    const checkScope = runnerConfig ? requiredChecksForConfig(runnerConfig) : { configured: [], required: [] };
+    registry = createEvidenceRegistry({ source: originalSource, commit, scenario: runnerConfig?.scenario ?? 'default', requiredChecks: checkScope.required, configuredChecks: checkScope.configured, briefProvenance: args.briefProvenance });
     captureInitialSourceEvidence(snapshot, registry);
     if (args.evidence) captureImportedEvidence(args.evidence, registry);
     const runner = runnerConfig ? createApprovedRunner({ config: runnerConfig, registry, scratch, timeoutMs: configuredTimeout() }) : undefined;
@@ -600,7 +602,7 @@ async function main(){
       const investigation = await runInvestigation({
         binary: process.env.TAKAVEN_CODEX_BIN || 'codex', cwd: scratch, basePrompt: prompt,
         requestSchema: join(root, 'investigation-request.schema.json'), reportSchema: schema,
-        registry, checkout, timeoutMs: configuredTimeout(), runner,
+        registry, checkout, timeoutMs: configuredTimeout(), runner, initialReadFiles: snapshot.coverage.read_files,
       });
       modelReport = investigation.report;
       investigationHistory = investigation.history;
@@ -614,7 +616,7 @@ async function main(){
     const auditedAt = new Date().toISOString();
     const trustedModelReport = applyTrustedMetadata(modelReport, { project: name, commit, mode: args.mode, source: originalSource, auditedAt, coverage });
     const modelReportEvidenceId = captureEvidence(registry, { type: 'model_report', action: 'model_output', outcome: 'received', content: modelReport, runtime_status: modelReport.runtime_status, runtime_evidence: modelReport.runtime_evidence });
-    const runtimeHandoff = applyControllerRuntimeResults(trustedModelReport, registry, { scenario: registry.scenario });
+    const runtimeHandoff = applyControllerRuntimeResults(trustedModelReport, registry, { scenario: registry.scenario, mode: args.mode });
     if (runtimeHandoff.contradictions.length > 0) {
       captureEvidence(registry, { type: 'model_runtime_contradiction', action: 'controller_validation', outcome: 'failed_attempt', model_report_evidence_id: modelReportEvidenceId, contradictions: runtimeHandoff.contradictions });
     }
