@@ -150,7 +150,7 @@ function readTextRange(absolute, start, length) {
   }
 }
 
-export function processInvestigationRequests({ requests, checkout, registry, retrievalBytesUsed = 0, runner, coverageStates = new Map() } = {}) {
+export function processInvestigationRequests({ requests, checkout, registry, retrievalBytesUsed = 0, runner, coverageStates = new Map(), touchedPaths = new Set() } = {}) {
   const results = [];
   let retrievedBytes = retrievalBytesUsed;
   const retrievedPaths = new Set();
@@ -188,6 +188,7 @@ export function processInvestigationRequests({ requests, checkout, registry, ret
         else if (coverageStates.get(relativePath) !== 'complete') coverageStates.set(relativePath, 'partial');
         retrievedBytes += Buffer.byteLength(content);
         retrievedPaths.add(relativePath);
+        touchedPaths.add(relativePath);
         const evidenceId = captureSource(registry, relativePath, content, 'source_read');
         files.push({ path: relativePath, evidence_id: evidenceId, content: redactEvidenceText(content), completeness: coverageStates.get(relativePath) });
       }
@@ -213,6 +214,7 @@ export function processInvestigationRequests({ requests, checkout, registry, ret
         if (retrievedBytes + Buffer.byteLength(excerpt) > MAX_RETRIEVAL_BYTES) break;
         retrievedBytes += Buffer.byteLength(excerpt);
         retrievedPaths.add(relativePath);
+        touchedPaths.add(relativePath);
         if (coverageStates.get(relativePath) !== 'complete') coverageStates.set(relativePath, 'partial');
         const evidenceId = captureSource(registry, relativePath, excerpt, 'source_search');
         matches.push({ path: relativePath, evidence_id: evidenceId, excerpt });
@@ -244,9 +246,9 @@ export function processInvestigationRequests({ requests, checkout, registry, ret
   return {
     results,
     retrievedBytes,
-    retrievedPaths: [...coverageStates.keys()],
-    completePaths: [...coverageStates.entries()].filter(([, state]) => state === 'complete').map(([path]) => path),
-    partialPaths: [...coverageStates.entries()].filter(([, state]) => state === 'partial').map(([path]) => path),
+    retrievedPaths: [...touchedPaths],
+    completePaths: [...touchedPaths].filter(path => coverageStates.get(path) === 'complete'),
+    partialPaths: [...touchedPaths].filter(path => coverageStates.get(path) === 'partial'),
     omittedLargeFiles: [...omittedLargeFiles],
     searchCoverage,
   };

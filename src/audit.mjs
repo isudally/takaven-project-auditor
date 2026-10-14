@@ -405,6 +405,7 @@ async function runInvestigation({ binary, cwd, basePrompt, requestSchema, report
   const deadlineAt = Date.now() + configuredInvestigationDeadline();
   let retrievalBytesUsed = 0;
   const coverageStates = new Map(initialReadFiles.map(path => [path, 'complete']));
+  const followUpTouchedPaths = new Set();
   const omittedLargeFiles = new Set();
   const searchCoverage = [];
   for (let round = 1; round <= MAX_INVESTIGATION_ROUNDS; round += 1) {
@@ -439,7 +440,7 @@ async function runInvestigation({ binary, cwd, basePrompt, requestSchema, report
       history.push({ round, action: response.action, rationale: response.rationale, evidence_id: requestEvidenceId });
       break;
     }
-    const processed = processInvestigationRequests({ requests: response.requests, checkout, registry, retrievalBytesUsed, runner, coverageStates });
+    const processed = processInvestigationRequests({ requests: response.requests, checkout, registry, retrievalBytesUsed, runner, coverageStates, touchedPaths: followUpTouchedPaths });
     retrievalBytesUsed = processed.retrievedBytes;
     for (const path of processed.omittedLargeFiles ?? []) omittedLargeFiles.add(path);
     searchCoverage.push(...(processed.searchCoverage ?? []));
@@ -480,7 +481,7 @@ async function runInvestigation({ binary, cwd, basePrompt, requestSchema, report
       reportFeedback = `The proposed_patch field failed validation: ${error.message}. The failed report is recorded as ${attemptEvidenceId}. A proposed patch in a final report is never executed automatically.`;
     }
   }
-  const followUpReadFiles = [...coverageStates.keys()];
+  const followUpReadFiles = [...followUpTouchedPaths];
   const followUpCompleteFiles = followUpReadFiles.filter(path => coverageStates.get(path) === 'complete');
   const followUpPartialFiles = followUpReadFiles.filter(path => coverageStates.get(path) === 'partial');
   return { report, history, coverage: { follow_up_read_files: followUpReadFiles, follow_up_complete_files: followUpCompleteFiles, follow_up_partial_files: followUpPartialFiles, follow_up_omitted_files: [...omittedLargeFiles], follow_up_searches: searchCoverage, follow_up_bytes_examined: retrievalBytesUsed, follow_up_byte_budget: 128 * 1024 } };

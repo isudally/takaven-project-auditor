@@ -129,15 +129,47 @@ test('source coverage upgrades partial reads and never downgrades complete reads
   } finally { rmSync(checkout, { recursive: true, force: true }); }
 });
 
-test('source search cannot downgrade a file already complete in the initial snapshot', () => {
+test('initial complete coverage is not reported as follow-up activity without a request', () => {
+  const checkout = mkdtempSync(join(tmpdir(), 'takaven-investigation-initial-idle-'));
+  try {
+    writeFileSync(join(checkout, 'app.mjs'), 'export const value = "needle";\n');
+    const registry = createEvidenceRegistry({ source: 'fixture', commit: 'abc' });
+    const coverageStates = new Map([['app.mjs', 'complete']]);
+    const result = processInvestigationRequests({ checkout, registry, coverageStates, requests: [] });
+    assert.equal(coverageStates.get('app.mjs'), 'complete');
+    assert.deepEqual(result.retrievedPaths, []);
+    assert.deepEqual(result.completePaths, []);
+    assert.deepEqual(result.partialPaths, []);
+  } finally { rmSync(checkout, { recursive: true, force: true }); }
+});
+
+test('search touches an initially complete file without downgrading its coverage', () => {
   const checkout = mkdtempSync(join(tmpdir(), 'takaven-investigation-initial-coverage-'));
   try {
     writeFileSync(join(checkout, 'app.mjs'), 'export const value = "needle";\n');
     const registry = createEvidenceRegistry({ source: 'fixture', commit: 'abc' });
     const coverageStates = new Map([['app.mjs', 'complete']]);
     const result = processInvestigationRequests({ checkout, registry, coverageStates, requests: [{ type: 'source_search', query: 'needle' }] });
+    assert.deepEqual(result.retrievedPaths, ['app.mjs']);
     assert.deepEqual(result.completePaths, ['app.mjs']);
     assert.deepEqual(result.partialPaths, []);
+  } finally { rmSync(checkout, { recursive: true, force: true }); }
+});
+
+test('search on an initially omitted file remains partial until a complete read', () => {
+  const checkout = mkdtempSync(join(tmpdir(), 'takaven-investigation-omitted-coverage-'));
+  try {
+    writeFileSync(join(checkout, 'app.mjs'), 'export const value = "needle";\n');
+    const registry = createEvidenceRegistry({ source: 'fixture', commit: 'abc' });
+    const coverageStates = new Map();
+    const touchedPaths = new Set();
+    const partial = processInvestigationRequests({ checkout, registry, coverageStates, touchedPaths, requests: [{ type: 'source_search', query: 'needle' }] });
+    assert.deepEqual(partial.partialPaths, ['app.mjs']);
+    assert.equal(coverageStates.get('app.mjs'), 'partial');
+    const complete = processInvestigationRequests({ checkout, registry, coverageStates, touchedPaths, requests: [{ type: 'source_read', paths: ['app.mjs'] }] });
+    assert.deepEqual(complete.completePaths, ['app.mjs']);
+    assert.deepEqual(complete.partialPaths, []);
+    assert.deepEqual(complete.retrievedPaths, ['app.mjs']);
   } finally { rmSync(checkout, { recursive: true, force: true }); }
 });
 
