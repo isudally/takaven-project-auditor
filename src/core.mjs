@@ -130,10 +130,10 @@ export function validateAuditHistory(value, { source = null, commit = null, gate
   };
 }
 
-export function readAuditHistory(path) {
+export function readAuditHistory(path, options = {}) {
   let value;
   try { value = JSON.parse(readFileSync(path, 'utf8')); } catch { throw new Error('Audit history must contain valid JSON'); }
-  return validateAuditHistory(value);
+  return validateAuditHistory(value, options);
 }
 
 export function legacyDecisionControls() {

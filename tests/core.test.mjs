@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseArgs, normalizeGithub, validateGitRef, validateReport, renderMarkdown, promptForRun, applyTrustedMetadata, validateProjectBrief, validateBriefProvenance, validateGateContext, validateAuditHistory } from '../src/core.mjs';
+import { parseArgs, normalizeGithub, validateGitRef, validateReport, renderMarkdown, promptForRun, applyTrustedMetadata, validateProjectBrief, validateBriefProvenance, validateGateContext, validateAuditHistory, readAuditHistory } from '../src/core.mjs';
 import { buildCodexArgs, resolveCodexCommand } from '../src/audit.mjs';
 import { createEvidenceRegistry, captureEvidence, redactEvidenceText } from '../src/evidence.mjs';
 import { readFileSync } from 'node:fs';
@@ -183,6 +183,24 @@ test('audit history is controller-bound rather than self-asserted',()=>{
   void _previousIds;
   void _previousFindings;
   assert.throws(()=>validateAuditHistory({...historyArtifact, current_target:{source:'other',commit:'b'.repeat(40)}},{source:'repo',commit:'b'.repeat(40),gateContext:gate}),/current_target.source/);
+});
+test('readAuditHistory forwards current controller binding context',()=>{
+  const root=mkdtempSync(join(tmpdir(),'takaven-history-'));
+  const source='repo';
+  const currentCommit='b'.repeat(40);
+  const previousCommit='a'.repeat(40);
+  const gate={current_gate:'F1',gate_question:'Does it pass?',pass_criteria:['Proof']};
+  const artifact={current_target:{source,commit:currentCommit},previous_metadata:{source,commit:previousCommit,project:'demo'},previous_report:{project:'demo',commit:previousCommit,verdict:'MODIFY',runtime_status:'NOT RUN',findings:[{id:'F-001',title:'Old finding',materiality:'DEFER'}],decision_control:{gate_context:gate}},gate_context:gate,repeated_same_gate:true,narrowing_findings:true,remaining_runtime_uncertainty:true,diminishing_source_value:true};
+  const path=join(root,'history.json');
+  writeFileSync(path,JSON.stringify(artifact));
+  try {
+    assert.equal(readAuditHistory(path,{source,commit:currentCommit,gateContext:gate}).previous_commit,previousCommit);
+    assert.throws(()=>readAuditHistory(path,{source:'other',commit:currentCommit,gateContext:gate}),/current_target.source/);
+    assert.throws(()=>readAuditHistory(path,{source,commit:'c'.repeat(40),gateContext:gate}),/current_target.commit/);
+    assert.throws(()=>readAuditHistory(path,{source,commit:currentCommit,gateContext:{...gate,current_gate:'other'}}),/gate context/);
+    writeFileSync(path,JSON.stringify({...artifact,validated:true}));
+    assert.throws(()=>readAuditHistory(path,{source,commit:currentCommit,gateContext:gate}),/cannot self-assert/);
+  } finally { rmSync(root,{recursive:true,force:true}); }
 });
 test('controller metadata overrides model identity',()=>{
   const result=applyTrustedMetadata(sample,{project:'trusted',commit:'abc123',mode:'inspect',source:'repo',auditedAt:'2026-10-11T00:00:00.000Z'});
