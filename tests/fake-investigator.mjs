@@ -16,7 +16,10 @@ if (schema.endsWith('investigation-request.schema.json')) {
   writeFileSync(output, JSON.stringify({
     project: 'fake', commit: 'model-commit', verdict: 'CONTINUE', executive_summary: 'Investigation completed.',
     runtime_status: 'NOT RUN', runtime_evidence: [],
-    findings: [{ title: 'Observed source', severity: 'INFO', evidence_type: 'OBSERVED', evidence: 'The source was retrieved by the controller.', location: 'app.mjs:1', recommended_fix: 'None.', evidence_ids: [ids[0]] }],
+    findings: [{ id:'F-001', title: 'Observed source', severity: 'INFO', evidence_type: 'OBSERVED', evidence: 'The source was retrieved by the controller.', location: 'app.mjs:1', recommended_fix: 'None.', materiality:'INFORMATIONAL', invariant:'The source is retrievable.', consequence:'None established.', smallest_correction:'None.', evidence_ids: [ids[0]] }],
+    product_assessment:{purpose_fit:'Fixture',strengths:[],opportunities:[],reuse_or_simplify:[]},
+    complexity_assessment:{status:'CLEAR',summary:'No additional architecture is evidenced.',items:[]},
+    decision_control:{gate_context:{current_gate:null,gate_question:null,pass_criteria:[]},evidence_ceiling:'SOURCE_REVIEW_STILL_USEFUL',audit_loop_risk:'UNKNOWN',blocking_finding_ids:[],deferred_finding_ids:[],primary_next_action:{title:'Review the report.',substeps:[]}},
     proposed_patch: 'diff --git a/app.mjs b/app.mjs\n--- a/app.mjs\n+++ b/app.mjs\n@@ -1 +1 @@\n-export const app = true;\n+export const app = true;',
     reuse_assessment: [], commercial_risks: [], unverified: ['Runtime not run.'], next_actions: [],
   }));

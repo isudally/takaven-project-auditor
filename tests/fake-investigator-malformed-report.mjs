@@ -18,7 +18,10 @@ if (schema.endsWith('investigation-request.schema.json')) {
   writeFileSync(output, JSON.stringify({
     project: 'fake', commit: 'model-commit', verdict: 'MODIFY', executive_summary: 'The controller retained the invalid correction attempt and requested a bounded retry.',
     runtime_status: 'NOT RUN', runtime_evidence: [],
-    findings: [{ title: 'Observed source', severity: 'INFO', evidence_type: 'OBSERVED', evidence: 'The source was retrieved by the controller.', location: 'app.mjs:1', recommended_fix: 'None.', evidence_ids: [evidenceId] }],
+    findings: [{ id:'F-001', title: 'Observed source', severity: 'INFO', evidence_type: 'OBSERVED', evidence: 'The source was retrieved by the controller.', location: 'app.mjs:1', recommended_fix: 'None.', materiality:'INFORMATIONAL', invariant:'The source is retrievable.', consequence:'None established.', smallest_correction:'None.', evidence_ids: [evidenceId] }],
+    product_assessment:{purpose_fit:'Fixture',strengths:[],opportunities:[],reuse_or_simplify:[]},
+    complexity_assessment:{status:'CLEAR',summary:'No additional architecture is evidenced.',items:[]},
+    decision_control:{gate_context:{current_gate:null,gate_question:null,pass_criteria:[]},evidence_ceiling:'SOURCE_REVIEW_STILL_USEFUL',audit_loop_risk:'UNKNOWN',blocking_finding_ids:[],deferred_finding_ids:[],primary_next_action:{title:'Review the proposed correction.',substeps:[]}},
     proposed_patch: retry ? null : '--- a/app.mjs\n+++ b/app.mjs\n@@\n-old\n+new',
     reuse_assessment: [], commercial_risks: [],
     unverified: [retry ? 'Correction remains unverified.' : 'The first correction proposal was malformed.'],

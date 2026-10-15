@@ -29,9 +29,14 @@
           "evidence": {"type": "string"},
           "location": {"type": "string"},
           "recommended_fix": {"type": "string"},
+          "id": {"type": "string", "pattern": "^F-[0-9]{3,}$"},
+          "materiality": {"type": "string", "enum": ["BLOCKER", "MATERIAL", "DEFER", "INFORMATIONAL"]},
+          "invariant": {"type": "string"},
+          "consequence": {"type": "string"},
+          "smallest_correction": {"type": "string"},
           "evidence_ids": {"type": ["array", "null"], "items": {"type": "string", "pattern": "^ev-[a-f0-9]{16}$"}, "minItems": 1}
         },
-        "required": ["title", "severity", "evidence_type", "evidence", "location", "recommended_fix", "evidence_ids"],
+        "required": ["id", "title", "severity", "evidence_type", "evidence", "location", "recommended_fix", "materiality", "invariant", "consequence", "smallest_correction", "evidence_ids"],
         "additionalProperties": false
       }
     },
@@ -70,12 +75,65 @@
       "required": ["purpose_fit", "strengths", "opportunities", "reuse_or_simplify"],
       "additionalProperties": false
     },
+    "complexity_assessment": {
+      "type": "object",
+      "properties": {
+        "status": {"type": "string", "enum": ["CLEAR", "CHALLENGE", "BLOCK", "UNKNOWN"]},
+        "summary": {"type": "string"},
+        "items": {"type": "array", "items": {
+          "type": "object",
+          "properties": {
+            "trigger": {"type": "string"},
+            "requirement": {"type": "string"},
+            "why_now": {"type": "string"},
+            "existing_alternative": {"type": "string"},
+            "burden": {"type": "string"},
+            "minimum_sufficient_path": {"type": "string"},
+            "evidence_ids": {"type": "array", "items": {"type": "string", "pattern": "^ev-[a-f0-9]{16}$"}, "minItems": 1}
+          },
+          "required": ["trigger", "requirement", "why_now", "existing_alternative", "burden", "minimum_sufficient_path", "evidence_ids"],
+          "additionalProperties": false
+        }}
+      },
+      "required": ["status", "summary", "items"],
+      "additionalProperties": false
+    },
+    "decision_control": {
+      "type": "object",
+      "properties": {
+        "gate_context": {
+          "type": "object",
+          "properties": {
+            "current_gate": {"type": ["string", "null"]},
+            "gate_question": {"type": ["string", "null"]},
+            "pass_criteria": {"type": "array", "items": {"type": "string"}}
+          },
+          "required": ["current_gate", "gate_question", "pass_criteria"],
+          "additionalProperties": false
+        },
+        "evidence_ceiling": {"type": "string", "enum": ["SOURCE_REVIEW_STILL_USEFUL", "MOVE_TO_DETERMINISTIC_TEST", "MOVE_TO_CONTROLLED_RUNTIME", "MOVE_TO_LIVE_PROOF", "INSUFFICIENT_CONTEXT", "UNKNOWN"]},
+        "audit_loop_risk": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "UNKNOWN"]},
+        "blocking_finding_ids": {"type": "array", "items": {"type": "string", "pattern": "^F-[0-9]{3,}$"}},
+        "deferred_finding_ids": {"type": "array", "items": {"type": "string", "pattern": "^F-[0-9]{3,}$"}},
+        "primary_next_action": {
+          "type": "object",
+          "properties": {
+            "title": {"type": "string"},
+            "substeps": {"type": "array", "items": {"type": "string"}}
+          },
+          "required": ["title", "substeps"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["gate_context", "evidence_ceiling", "audit_loop_risk", "blocking_finding_ids", "deferred_finding_ids", "primary_next_action"],
+      "additionalProperties": false
+    },
     "reuse_assessment": {"type": "array", "items": {"type": "string"}},
     "commercial_risks": {"type": "array", "items": {"type": "string"}},
     "unverified": {"type": "array", "items": {"type": "string"}},
-    "next_actions": {"type": "array", "items": {"type": "string"}},
+    "next_actions": {"type": "array", "maxItems": 0, "items": {"type": "string"}},
     "proposed_patch": {"type": ["string", "null"]}
   },
-  "required": ["project", "commit", "verdict", "executive_summary", "runtime_status", "runtime_evidence", "findings", "product_assessment", "reuse_assessment", "commercial_risks", "unverified", "next_actions", "proposed_patch"],
+  "required": ["project", "commit", "verdict", "executive_summary", "runtime_status", "runtime_evidence", "findings", "product_assessment", "complexity_assessment", "decision_control", "reuse_assessment", "commercial_risks", "unverified", "next_actions", "proposed_patch"],
   "additionalProperties": false
 }
