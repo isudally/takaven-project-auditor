@@ -23,7 +23,7 @@ The controller now performs strict structural and semantic report validation, re
 
 The model response schema intentionally contains only model-owned fields. Trusted identity, execution metadata and inspection coverage are added by the controller after validation and cannot be supplied by the model. Local audits warn when uncommitted changes are excluded because only the committed snapshot is audited.
 
-New reports also require report-local finding IDs and materiality (`BLOCKER`, `MATERIAL`, `DEFER` or `INFORMATIONAL`). BLOCKER/MATERIAL findings must state the affected invariant, consequence and smallest acceptable correction. The controller rejects contradictory references, untrusted gate context, unsupported audit-loop confidence and a complexity `BLOCK` paired with an unqualified positive verdict. Older reports remain readable and render missing controls as `UNKNOWN`; they are not silently upgraded to current validation status.
+New reports also require report-local finding IDs and materiality (`BLOCKER`, `MATERIAL`, `DEFER` or `INFORMATIONAL`). BLOCKER/MATERIAL findings must state the affected invariant, consequence and smallest acceptable correction. The controller rejects contradictory references, untrusted gate context, unsupported audit-loop confidence and a complexity `BLOCK` paired with an unqualified positive verdict. Strict reports use `decision_control.primary_next_action` as their only action channel; legacy `next_actions` are retained only for backward-compatible rendering. Older reports remain readable and render missing controls as `UNKNOWN`; they are not silently upgraded to current validation status.
 
 Work package 1 does **not** establish a complete execution security boundary. Verify mode remains dependent on the next work package: a separate credential-free repository executor, approved command policy, restricted network, independently captured command traces and known-answer evaluation. Do not enable verify mode for unknown repositories carrying production credentials.
 
@@ -47,7 +47,7 @@ node src/audit.mjs --path /path/to/project --brief ./project-brief.json --brief-
 # Optional trusted gate context. This JSON is controller input, not model output.
 node src/audit.mjs --path /path/to/project --gate-context ./gate-context.json --mode inspect --investigate --out ./reports/gated-review
 
-# Optional controller-validated prior-report history. Invalid or absent history falls back to a normal audit.
+# Optional controller-bound prior-report history. The artifact must bind the current target, prior report, prior metadata and gate context; invalid or absent history falls back to a normal audit.
 node src/audit.mjs --path /path/to/project --history ./validated-audit-history.json --mode inspect --investigate --out ./reports/delta-review
 
 # Deeper audit, only with an explicit approved runner configuration and an isolated computer.

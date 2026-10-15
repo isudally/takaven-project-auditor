@@ -127,24 +127,62 @@ test('new reports require complexity, finding materiality and decision controls'
   const registry=createEvidenceRegistry({source:'fixture',commit:'abc'});
   const id=captureEvidence(registry,{type:'source',action:'source_read',location:'app.mjs',content_hash:'sha256:test',content:'evidence',outcome:'retrieved'});
   const finding={id:'F-001',title:'Risk',severity:'HIGH',evidence_type:'OBSERVED',evidence:'Observed risk.',location:'app.mjs:1',recommended_fix:'Make the invariant true.',materiality:'BLOCKER',invariant:'Required behavior holds.',consequence:'Users are affected.',smallest_correction:'Fix the narrow path.',evidence_ids:[id]};
-  const report={...sample,commit:'abc',runtime_status:'NOT RUN',runtime_evidence:[],findings:[finding],product_assessment:{purpose_fit:'Fit',strengths:[],opportunities:[],reuse_or_simplify:[]},complexity_assessment:{status:'CHALLENGE',summary:'A narrow risk is present.',items:[]},decision_control:{gate_context:{current_gate:null,gate_question:null,pass_criteria:[]},evidence_ceiling:'SOURCE_REVIEW_STILL_USEFUL',audit_loop_risk:'UNKNOWN',blocking_finding_ids:['F-001'],deferred_finding_ids:[],primary_next_action:{title:'Fix the invariant.',substeps:[]}}};
+  const report={...sample,commit:'abc',runtime_status:'NOT RUN',runtime_evidence:[],next_actions:[],findings:[finding],product_assessment:{purpose_fit:'Fit',strengths:[],opportunities:[],reuse_or_simplify:[]},complexity_assessment:{status:'CHALLENGE',summary:'A narrow risk is present.',items:[]},decision_control:{gate_context:{current_gate:null,gate_question:null,pass_criteria:[]},evidence_ceiling:'SOURCE_REVIEW_STILL_USEFUL',audit_loop_risk:'UNKNOWN',blocking_finding_ids:['F-001'],deferred_finding_ids:[],primary_next_action:{title:'Fix the invariant.',substeps:[]}}};
   assert.doesNotThrow(()=>validateReport(report,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}));
   const {complexity_assessment: _missingComplexity, ...withoutComplexity}=report;
   void _missingComplexity;
   assert.throws(()=>validateReport(withoutComplexity,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}),/Missing report field: complexity_assessment/);
   assert.throws(()=>validateReport({...report,complexity_assessment:undefined},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}),/complexity_assessment must be an object/);
-  assert.throws(()=>validateReport({...report,decision_control:{...report.decision_control,deferred_finding_ids:['F-001']}},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}),/both blocking and deferred/);
-  assert.throws(()=>validateReport({...report,complexity_assessment:{...report.complexity_assessment,status:'BLOCK'},verdict:'CONTINUE'},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}),/Complexity BLOCK/);
+  assert.throws(()=>validateReport({...report,decision_control:{...report.decision_control,deferred_finding_ids:['F-001']}},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}),/BLOCKER F-001/);
+  assert.throws(()=>validateReport({...report,findings:[{...finding,materiality:'MATERIAL'}],complexity_assessment:{...report.complexity_assessment,status:'BLOCK'},verdict:'CONTINUE'},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}),/Complexity BLOCK/);
+});
+test('strict reports have one authoritative next-action channel',()=>{
+  const registry=createEvidenceRegistry({source:'fixture',commit:'abc'});
+  const id=captureEvidence(registry,{type:'source',action:'source_read',location:'app.mjs',content_hash:'sha256:test',content:'evidence',outcome:'retrieved'});
+  const finding={id:'F-001',title:'Risk',severity:'HIGH',evidence_type:'OBSERVED',evidence:'Observed risk.',location:'app.mjs:1',recommended_fix:'Fix the invariant.',materiality:'MATERIAL',invariant:'Required behavior holds.',consequence:'Users are affected.',smallest_correction:'Fix the narrow path.',evidence_ids:[id]};
+  const report={...sample,commit:'abc',runtime_status:'NOT RUN',runtime_evidence:[],next_actions:[],findings:[finding],product_assessment:{purpose_fit:'Fit',strengths:[],opportunities:[],reuse_or_simplify:[]},complexity_assessment:{status:'CLEAR',summary:'No extra architecture is evidenced.',items:[]},decision_control:{gate_context:{current_gate:'F1',gate_question:'Does it pass?',pass_criteria:['Proof']},evidence_ceiling:'MOVE_TO_LIVE_PROOF',audit_loop_risk:'UNKNOWN',blocking_finding_ids:[],deferred_finding_ids:[],primary_next_action:{title:'Run the live proof.',substeps:[]}}};
+  assert.doesNotThrow(()=>validateReport(report,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true,trustedGateContext:report.decision_control.gate_context}));
+  assert.throws(()=>validateReport({...report,next_actions:['Run another broad source audit']},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true,trustedGateContext:report.decision_control.gate_context}),/only next-action channel/);
+});
+test('materiality must match blocking and deferred references',()=>{
+  const registry=createEvidenceRegistry({source:'fixture',commit:'abc'});
+  const id=captureEvidence(registry,{type:'source',action:'source_read',location:'app.mjs',content_hash:'sha256:test',content:'evidence',outcome:'retrieved'});
+  const finding={id:'F-001',title:'Risk',severity:'HIGH',evidence_type:'OBSERVED',evidence:'Observed risk.',location:'app.mjs:1',recommended_fix:'Fix it.',materiality:'BLOCKER',invariant:'Invariant.',consequence:'Consequence.',smallest_correction:'Correction.',evidence_ids:[id]};
+  const base={...sample,commit:'abc',runtime_status:'NOT RUN',runtime_evidence:[],next_actions:[],findings:[finding],product_assessment:{purpose_fit:'Fit',strengths:[],opportunities:[],reuse_or_simplify:[]},complexity_assessment:{status:'CLEAR',summary:'Clear.',items:[]},decision_control:{gate_context:{current_gate:null,gate_question:null,pass_criteria:[]},evidence_ceiling:'SOURCE_REVIEW_STILL_USEFUL',audit_loop_risk:'UNKNOWN',blocking_finding_ids:['F-001'],deferred_finding_ids:[],primary_next_action:{title:'Fix it.',substeps:[]}}};
+  assert.throws(()=>validateReport({...base,verdict:'CONTINUE'},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}),/BLOCKER findings/);
+  assert.throws(()=>validateReport({...base,findings:[{...finding,materiality:'DEFER'}]},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}),/DEFER F-001/);
+  assert.throws(()=>validateReport({...base,findings:[{...finding,materiality:'INFORMATIONAL'}]},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}),/INFORMATIONAL F-001/);
+  assert.doesNotThrow(()=>validateReport({...base,findings:[{...finding,materiality:'MATERIAL'}]},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}));
+  assert.doesNotThrow(()=>validateReport({...base,findings:[{...finding,materiality:'DEFER'}],decision_control:{...base.decision_control,blocking_finding_ids:[],deferred_finding_ids:['F-001']}},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}));
+});
+test('complexity claims require eligible controller evidence',()=>{
+  const registry=createEvidenceRegistry({source:'fixture',commit:'abc'});
+  const sourceId=captureEvidence(registry,{type:'source',action:'source_read',location:'app.mjs',content_hash:'sha256:test',content:'evidence',outcome:'retrieved'});
+  const base={...sample,commit:'abc',runtime_status:'NOT RUN',runtime_evidence:[],next_actions:[],findings:[],product_assessment:{purpose_fit:'Fit',strengths:[],opportunities:[],reuse_or_simplify:[]},complexity_assessment:{status:'CHALLENGE',summary:'A narrow concern.',items:[{trigger:'A request adds burden.',requirement:'Keep the path bounded.',why_now:'The gate is narrow.',existing_alternative:'Existing helper.',burden:'Small.',minimum_sufficient_path:'Use the helper.',evidence_ids:[sourceId]}]},decision_control:{gate_context:{current_gate:null,gate_question:null,pass_criteria:[]},evidence_ceiling:'SOURCE_REVIEW_STILL_USEFUL',audit_loop_risk:'UNKNOWN',blocking_finding_ids:[],deferred_finding_ids:[],primary_next_action:{title:'Review the helper.',substeps:[]}}};
+  assert.doesNotThrow(()=>validateReport(base,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}));
+  for (const type of ['model_request','imported_external']) {
+    const id=captureEvidence(registry,{type,action:'untrusted',outcome:'received'});
+    assert.throws(()=>validateReport({...base,complexity_assessment:{...base.complexity_assessment,items:[{...base.complexity_assessment.items[0],evidence_ids:[id]}]}},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}),/eligible controller source or execution evidence/);
+  }
 });
 test('legacy reports render with safe UNKNOWN controls',()=>{
   const md=renderMarkdown(sample,{source:'repo',mode:'inspect',timestamp:'now'});
   assert.match(md,/Complexity gate: \*\*UNKNOWN\*\*/);
   assert.match(md,/Audit-loop risk: \*\*UNKNOWN\*\*/);
 });
-test('validated audit history is required for delta context and HIGH loop risk',()=>{
-  assert.throws(()=>validateAuditHistory({previous_commit:'abc'}),/controller-validated/);
-  const history=validateAuditHistory({validated:true,previous_commit:'a'.repeat(40),previous_report:{commit:'a'.repeat(40),findings:[{id:'F-001'}]},repeated_same_gate:true,narrowing_findings:true,remaining_runtime_uncertainty:true,diminishing_source_value:true});
+test('audit history is controller-bound rather than self-asserted',()=>{
+  assert.throws(()=>validateAuditHistory({validated:true,previous_commit:'abc'}),/cannot self-assert/);
+  const gate={current_gate:'F1',gate_question:'Does it pass?',pass_criteria:['Proof']};
+  const previousReport={project:'demo',commit:'a'.repeat(40),verdict:'MODIFY',runtime_status:'NOT RUN',findings:[{id:'F-001',title:'Old finding',materiality:'DEFER'}],decision_control:{gate_context:gate}};
+  const history=validateAuditHistory({current_target:{source:'repo',commit:'b'.repeat(40)},previous_metadata:{source:'repo',commit:'a'.repeat(40),project:'demo'},previous_report:previousReport,gate_context:gate,repeated_same_gate:true,narrowing_findings:true,remaining_runtime_uncertainty:true,diminishing_source_value:true},{source:'repo',commit:'b'.repeat(40),gateContext:gate});
   assert.equal(history.previous_finding_ids[0],'F-001');
+  assert.throws(()=>validateAuditHistory({...history, validated:true, current_target:{source:'other',commit:'b'.repeat(40)}},{source:'repo',commit:'b'.repeat(40),gateContext:gate}),/cannot self-assert/);
+  const {validated: _validated, previous_commit: _previousCommit, previous_finding_ids: _previousIds, previous_findings: _previousFindings, ...historyArtifact}=history;
+  void _validated;
+  void _previousCommit;
+  void _previousIds;
+  void _previousFindings;
+  assert.throws(()=>validateAuditHistory({...historyArtifact, current_target:{source:'other',commit:'b'.repeat(40)}},{source:'repo',commit:'b'.repeat(40),gateContext:gate}),/current_target.source/);
 });
 test('controller metadata overrides model identity',()=>{
   const result=applyTrustedMetadata(sample,{project:'trusted',commit:'abc123',mode:'inspect',source:'repo',auditedAt:'2026-10-11T00:00:00.000Z'});

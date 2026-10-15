@@ -89,22 +89,44 @@ export function readGateContext(path) {
   return validateGateContext(value);
 }
 
-export function validateAuditHistory(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || value.validated !== true) throw new Error('Audit history must be controller-validated');
-  if (typeof value.previous_commit !== 'string' || !/^[a-f0-9]{40}$/i.test(value.previous_commit)) throw new Error('Audit history previous_commit must be a full SHA');
-  if (!value.previous_report || typeof value.previous_report !== 'object' || value.previous_report.commit !== value.previous_commit) throw new Error('Audit history report does not match previous_commit');
-  if (!Array.isArray(value.previous_report.findings) || value.previous_report.findings.some(finding => typeof finding.id !== 'string' || !/^F-[0-9]{3,}$/.test(finding.id))) throw new Error('Audit history requires validated previous finding IDs');
-  if (value.gate_context !== undefined) validateGateContext(value.gate_context);
+export function validateAuditHistory(value, { source = null, commit = null, gateContext = null } = {}) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Audit history must be an object');
+  if ('validated' in value) throw new Error('Audit history cannot self-assert controller validation');
+  const allowed = new Set(['current_target', 'previous_metadata', 'previous_report', 'gate_context', 'repeated_same_gate', 'narrowing_findings', 'remaining_runtime_uncertainty', 'diminishing_source_value']);
+  for (const key of Object.keys(value)) if (!allowed.has(key)) throw new Error(`Unexpected audit history field: ${key}`);
+  requireObject(value.current_target, 'audit history current_target');
+  requireString(value.current_target.source, 'audit history current_target.source');
+  if (typeof value.current_target.commit !== 'string' || !/^[a-f0-9]{40}$/i.test(value.current_target.commit)) throw new Error('Audit history current_target.commit must be a full SHA');
+  if (source !== null && value.current_target.source !== source) throw new Error('Audit history current_target.source does not match the audited source');
+  if (commit !== null && value.current_target.commit !== commit) throw new Error('Audit history current_target.commit does not match the audited commit');
+  requireObject(value.previous_metadata, 'audit history previous_metadata');
+  requireString(value.previous_metadata.source, 'audit history previous_metadata.source');
+  if (typeof value.previous_metadata.commit !== 'string' || !/^[a-f0-9]{40}$/i.test(value.previous_metadata.commit)) throw new Error('Audit history previous_metadata.commit must be a full SHA');
+  if (source !== null && value.previous_metadata.source !== source) throw new Error('Audit history previous_metadata.source does not match the audited source');
+  if (value.previous_metadata.project !== undefined) requireString(value.previous_metadata.project, 'audit history previous_metadata.project');
+  const previousCommit = value.previous_metadata.commit;
+  if (!value.previous_report || typeof value.previous_report !== 'object' || value.previous_report.commit !== previousCommit) throw new Error('Audit history report does not match previous_metadata.commit');
+  for (const field of ['project', 'commit', 'verdict', 'runtime_status']) requireString(value.previous_report[field], `audit history previous_report.${field}`);
+  if (!Array.isArray(value.previous_report.findings) || value.previous_report.findings.some(finding => !finding || typeof finding !== 'object' || typeof finding.id !== 'string' || !/^F-[0-9]{3,}$/.test(finding.id))) throw new Error('Audit history requires report-local previous finding IDs');
+  const previousIds = value.previous_report.findings.map(finding => finding.id);
+  if (new Set(previousIds).size !== previousIds.length) throw new Error('Audit history contains duplicate previous finding IDs');
+  if (value.previous_metadata.project !== undefined && value.previous_report.project !== value.previous_metadata.project) throw new Error('Audit history project metadata does not match previous_report');
+  const historyGate = validateGateContext(value.gate_context ?? { current_gate: null, gate_question: null, pass_criteria: [] });
+  if (!value.previous_report.decision_control?.gate_context || JSON.stringify(validateGateContext(value.previous_report.decision_control.gate_context)) !== JSON.stringify(historyGate)) throw new Error('Audit history previous report gate context is not bound to the history artifact');
+  if (gateContext !== null && JSON.stringify(historyGate) !== JSON.stringify(gateContext)) throw new Error('Audit history gate context does not match the trusted current gate');
   return {
     validated: true,
-    previous_commit: value.previous_commit,
-    previous_finding_ids: value.previous_report.findings.map(finding => finding.id),
+    current_target: { source: value.current_target.source, commit: value.current_target.commit },
+    previous_metadata: { source: value.previous_metadata.source, commit: previousCommit, ...(value.previous_metadata.project ? { project: value.previous_metadata.project } : {}) },
+    previous_report: value.previous_report,
+    previous_commit: previousCommit,
+    previous_finding_ids: previousIds,
     previous_findings: value.previous_report.findings.map(finding => ({ id: finding.id, title: finding.title, materiality: finding.materiality ?? 'UNKNOWN' })),
     repeated_same_gate: value.repeated_same_gate === true,
     narrowing_findings: value.narrowing_findings === true,
     remaining_runtime_uncertainty: value.remaining_runtime_uncertainty === true,
     diminishing_source_value: value.diminishing_source_value === true,
-    gate_context: value.gate_context ?? null,
+    gate_context: historyGate,
   };
 }
 
@@ -210,7 +232,7 @@ export function renderMarkdown(report, context) {
     '## Reuse and alternatives','',...report.reuse_assessment.map(s=>`- ${escapeNarrative(s)}`),'',
     '## Commercial and operational risks','',...report.commercial_risks.map(s=>`- ${escapeNarrative(s)}`),'',
     '## Not verified','',...(report.unverified.length?report.unverified.map(s=>`- ${escapeNarrative(s)}`):['- None recorded; check that this is justified.']),'',
-    '## Recommended next actions','',...report.next_actions.map((s,i)=>`${i+1}\. ${escapeNarrative(s)}`),'',
+    ...(report.next_actions.length ? ['## Recommended next actions','',...report.next_actions.map((s,i)=>`${i+1}\. ${escapeNarrative(s)}`),''] : []),
     '---','',
     '*This report reflects a disposable local clone, not an approved change to the source project. Findings must not be treated as proof of compliance.*',''
   ];
@@ -270,7 +292,10 @@ export function validateReportWithOptions(value, { mode, evidenceRegistry, requi
     if (requireDecisionControls) {
       if (typeof finding.id !== 'string' || !/^F-[0-9]{3,}$/.test(finding.id)) throw new Error(`findings[${index}].id must be a report-local F-### identifier`);
       if (!['BLOCKER', 'MATERIAL', 'DEFER', 'INFORMATIONAL'].includes(finding.materiality)) throw new Error(`Invalid finding materiality at index ${index}`);
-      for (const field of ['invariant', 'consequence', 'smallest_correction']) requireString(finding[field], `findings[${index}].${field}`);
+      for (const field of ['invariant', 'consequence', 'smallest_correction']) {
+        requireString(finding[field], `findings[${index}].${field}`);
+        if (finding[field].trim().length === 0) throw new Error(`findings[${index}].${field} must not be empty`);
+      }
     }
     if (!['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'].includes(finding.severity)) throw new Error(`Invalid finding severity at index ${index}`);
     if (!['OBSERVED', 'INFERRED', 'UNKNOWN'].includes(finding.evidence_type)) throw new Error(`Invalid finding evidence type at index ${index}`);
@@ -325,7 +350,9 @@ function validateDecisionControls(value, { evidenceRegistry, requireEvidenceIds,
   complexity.items.forEach((item, index) => {
     requireExactKeys(item, ['trigger', 'requirement', 'why_now', 'existing_alternative', 'burden', 'minimum_sufficient_path', 'evidence_ids'], 'complexity_assessment.items[' + index + ']');
     for (const field of ['trigger', 'requirement', 'why_now', 'existing_alternative', 'burden', 'minimum_sufficient_path']) requireString(item[field], `complexity_assessment.items[${index}].${field}`);
-    if (requireEvidenceIds) validateEvidenceIds(item.evidence_ids, evidenceRegistry, `complexity_assessment.items[${index}].evidence_ids`);
+    if (!Array.isArray(item.evidence_ids) || item.evidence_ids.length === 0) throw new Error(`complexity_assessment.items[${index}].evidence_ids must contain controller evidence IDs`);
+    if (requireEvidenceIds) validateFindingEvidenceIds(item.evidence_ids, evidenceRegistry, `complexity_assessment.items[${index}].evidence_ids`);
+    else validateEvidenceIds(item.evidence_ids, evidenceRegistry, `complexity_assessment.items[${index}].evidence_ids`);
   });
 
   const controls = value.decision_control;
@@ -353,8 +380,15 @@ function validateDecisionControls(value, { evidenceRegistry, requireEvidenceIds,
     if (['BLOCKER', 'MATERIAL'].includes(finding.materiality) && (!finding.evidence_ids?.length || (requireEvidenceIds && !finding.evidence_ids.every(id => isEligibleFindingEvidence(evidenceRegistry, id))))) throw new Error(`${finding.materiality} ${finding.id} requires eligible evidence IDs`);
   }
   for (const id of [...controls.blocking_finding_ids, ...controls.deferred_finding_ids]) if (!findingsById.has(id)) throw new Error(`Unknown report-local finding reference: ${id}`);
+  for (const finding of value.findings) {
+    if (finding.materiality === 'BLOCKER' && (!controls.blocking_finding_ids.includes(finding.id) || controls.deferred_finding_ids.includes(finding.id))) throw new Error(`BLOCKER ${finding.id} must be blocking and not deferred`);
+    if (finding.materiality === 'DEFER' && (!controls.deferred_finding_ids.includes(finding.id) || controls.blocking_finding_ids.includes(finding.id))) throw new Error(`DEFER ${finding.id} must be deferred and not blocking`);
+    if (finding.materiality === 'INFORMATIONAL' && (controls.blocking_finding_ids.includes(finding.id) || controls.deferred_finding_ids.includes(finding.id))) throw new Error(`INFORMATIONAL ${finding.id} cannot be blocking or deferred`);
+  }
   const overlap = controls.blocking_finding_ids.find(id => controls.deferred_finding_ids.includes(id));
   if (overlap) throw new Error(`Finding ${overlap} cannot be both blocking and deferred`);
+  if (!Array.isArray(value.next_actions) || value.next_actions.length !== 0) throw new Error('Strict reports must use decision_control.primary_next_action as the only next-action channel');
+  if (controls.blocking_finding_ids.some(id => value.findings.find(finding => finding.id === id)?.materiality === 'BLOCKER') && value.verdict === 'CONTINUE') throw new Error('BLOCKER findings cannot coexist with CONTINUE');
   if (value.verdict === 'STOP' && controls.blocking_finding_ids.length === 0 && controls.deferred_finding_ids.length > 0) throw new Error('DEFER findings cannot be the sole reason to stop a gate');
   if (complexity.status === 'BLOCK' && value.verdict === 'CONTINUE') throw new Error('Complexity BLOCK cannot coexist with an unqualified CONTINUE verdict');
   const actionText = `${controls.primary_next_action.title} ${controls.primary_next_action.substeps.join(' ')}`.toLowerCase();

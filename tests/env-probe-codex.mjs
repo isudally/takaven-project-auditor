@@ -22,6 +22,6 @@ const report={
   reuse_assessment:[],
   commercial_risks:[],
   unverified:['Environment probe only'],
-  next_actions:['Run the real engine']
+  next_actions:[]
 };
 writeFileSync(output,JSON.stringify(report));
