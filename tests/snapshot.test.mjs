@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { collectRepositorySnapshot } from '../src/audit.mjs';
+import { redactEvidenceText, sanitiseEvidenceValue } from '../src/evidence.mjs';
 
 test('controller snapshot reads source, withholds sensitive files, and redacts secret-like values',()=>{
   const root=mkdtempSync(join(tmpdir(),'takaven-snapshot-'));
@@ -26,6 +27,19 @@ test('controller snapshot reads source, withholds sensitive files, and redacts s
   } finally {
     rmSync(root,{recursive:true,force:true});
   }
+});
+
+test('redacts JavaScript/TypeScript declarations and inline credential configuration',()=>{
+  const source = [
+    'const apiKey = "synthetic-api-key-value";',
+    "let clientSecret = 'synthetic-client-secret-value';",
+    'const config = { access_token: "synthetic-access-token-value" };',
+    'const harmless = "keep-this";'
+  ].join('\n');
+  const redacted = redactEvidenceText(source);
+  assert.doesNotMatch(redacted,/synthetic-(?:api-key|client-secret|access-token)-value/);
+  assert.match(redacted,/const harmless = "keep-this"/);
+  assert.doesNotMatch(JSON.stringify(sanitiseEvidenceValue({content:source})),/synthetic-(?:api-key|client-secret|access-token)-value/);
 });
 
 test('snapshot prioritizes executable flow and local imports before documentation',()=>{
@@ -54,3 +68,4 @@ test('snapshot prioritizes executable flow and local imports before documentatio
     rmSync(root,{recursive:true,force:true});
   }
 });
+

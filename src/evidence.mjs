@@ -4,11 +4,15 @@ const ID_PATTERN = /^ev-[a-f0-9]{16}$/;
 
 const SECRET_KEY = /^(?:api[_-]?key|secret|token|password|passwd|private[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token)$/i;
 const TOKEN_VALUE = /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|AKIA[A-Z0-9]{12,}|xox[baprs]-[A-Za-z0-9-]{12,})\b/g;
+const JS_SECRET_DECLARATION = /\b(?:const|let|var)\s+([A-Za-z_$][\w$-]*)\s*=\s*(['"`])([^\r\n]*?)\2/g;
+const INLINE_SECRET_ASSIGNMENT = /\b(api[_-]?key|secret|token|password|passwd|private[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token)\b\s*[:=]\s*(['"`])([^\r\n]*?)\2/gi;
 const SOURCE_EVIDENCE_TYPES = new Set(['source_snapshot', 'source']);
 const EXECUTION_EVIDENCE_TYPES = new Set(['executed_command', 'browser_execution', 'runner_execution']);
 
 export function redactEvidenceText(value) {
   return String(value)
+    .replace(JS_SECRET_DECLARATION, (match, key, quote) => SECRET_KEY.test(key) ? `${match.slice(0, match.indexOf(quote) + 1)}<REDACTED>${quote}` : match)
+    .replace(INLINE_SECRET_ASSIGNMENT, (match, key, quote) => `${match.slice(0, match.indexOf(quote) + 1)}<REDACTED>${quote}`)
     .replace(/((?:^|[\r\n])\s*["']?(?:api[_-]?key|secret|token|password|passwd|private[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token)["']?\s*[:=]\s*["']?)([^\r\n"'`,}]+)(["']?)/gim, '$1<REDACTED>$3')
     .replace(TOKEN_VALUE, '<REDACTED>');
 }
@@ -180,3 +184,4 @@ export function evidenceRegistryIndex(registry) {
     })),
   };
 }
+
