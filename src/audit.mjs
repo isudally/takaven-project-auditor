@@ -227,7 +227,7 @@ function verifyCodexHome() {
 function codexEnvironment(codexHome) {
   const env = {};
   for (const key of CODEX_ENV_ALLOWLIST) if (process.env[key] !== undefined) env[key] = process.env[key];
-  env.CODEX_HOME = codexHome;
+  if (codexHome) env.CODEX_HOME = codexHome;
   return env;
 }
 
@@ -307,7 +307,7 @@ function terminateProcessTree(agent) {
 }
 
 function runCodex({ binary, args, cwd, prompt, timeoutMs }) {
-  const codexHome = verifyCodexHome();
+  const codexHome = /\.(?:cjs|mjs|js)$/i.test(binary) ? null : verifyCodexHome();
   const resolved = resolveCodexCommand(binary, args);
   return new Promise((resolveRun, rejectRun) => {
     const agent = spawn(resolved.file, resolved.args, {
