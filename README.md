@@ -13,6 +13,7 @@
 - Optional owner-supplied project brief (`--brief`) containing purpose, intended users, workflows, objectives and constraints. Missing context remains UNKNOWN rather than becoming an invented requirement.
 - Machine-readable `report.json` and readable `report.md`.
 - Ready-made hostile-documentation and clean-control fixtures for evaluation.
+- Decision control for bounded reviews: every new report records a complexity assessment, evidence ceiling, trusted-gate context, audit-loop risk and one primary next action. These controls constrain conclusions; they do not replace engineering judgment.
 
 **Status:** The bounded static-audit path and the controller-mediated evidence-request loop are implemented and tested against clean, hostile and real-project snapshots. Inspect mode reads controller-selected source evidence, validates coverage and evidence IDs, and keeps runtime status `NOT RUN`. The investigative loop can retrieve bounded source and previously captured runtime evidence, and can request approved diagnostic experiments through an explicitly configured runner. Correction requests are rejected and proposed patches remain advisory; a separate implementation workflow owns changes. Runtime claims require runner configuration; a static or inspect-only invocation cannot claim execution.
 
@@ -21,6 +22,8 @@
 The controller now performs strict structural and semantic report validation, rejects unsupported runtime success claims, writes controller-owned project/commit/mode metadata, uses a sanitized Codex environment, applies a hard Codex timeout, cleans up process trees and scratch workspaces, and supports a Windows committed-snapshot fallback when local Git clone transport is blocked by the host.
 
 The model response schema intentionally contains only model-owned fields. Trusted identity, execution metadata and inspection coverage are added by the controller after validation and cannot be supplied by the model. Local audits warn when uncommitted changes are excluded because only the committed snapshot is audited.
+
+New reports also require report-local finding IDs and materiality (`BLOCKER`, `MATERIAL`, `DEFER` or `INFORMATIONAL`). BLOCKER/MATERIAL findings must state the affected invariant, consequence and smallest acceptable correction. The controller rejects contradictory references, untrusted gate context, unsupported audit-loop confidence and a complexity `BLOCK` paired with an unqualified positive verdict. Older reports remain readable and render missing controls as `UNKNOWN`; they are not silently upgraded to current validation status.
 
 Work package 1 does **not** establish a complete execution security boundary. Verify mode remains dependent on the next work package: a separate credential-free repository executor, approved command policy, restricted network, independently captured command traces and known-answer evaluation. Do not enable verify mode for unknown repositories carrying production credentials.
 
@@ -40,6 +43,12 @@ node src/audit.mjs --repo https://github.com/isudally/playkin --mode inspect --i
 
 # Product context supplied separately; provenance is controller-selected and defaults to unspecified
 node src/audit.mjs --path /path/to/project --brief ./project-brief.json --brief-provenance owner-confirmed --mode inspect --investigate --out ./reports/project
+
+# Optional trusted gate context. This JSON is controller input, not model output.
+node src/audit.mjs --path /path/to/project --gate-context ./gate-context.json --mode inspect --investigate --out ./reports/gated-review
+
+# Optional controller-validated prior-report history. Invalid or absent history falls back to a normal audit.
+node src/audit.mjs --path /path/to/project --history ./validated-audit-history.json --mode inspect --investigate --out ./reports/delta-review
 
 # Deeper audit, only with an explicit approved runner configuration and an isolated computer.
 # Verify mode requires the controller-mediated investigative loop.

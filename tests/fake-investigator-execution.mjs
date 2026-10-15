@@ -16,7 +16,10 @@ if (schema.endsWith('investigation-request.schema.json')) {
   writeFileSync(output, JSON.stringify({
     project: 'model-project', commit: 'model-commit', verdict: 'CONTINUE', executive_summary: 'The model returned a contradictory runtime classification.',
     runtime_status: 'NOT RUN', runtime_evidence: [],
-    findings: [{ title: 'Controller executed build', severity: 'INFO', evidence_type: 'OBSERVED', evidence: 'The controller supplied execution evidence.', location: 'app.mjs:1', recommended_fix: 'None.', evidence_ids: [ids[0]] }],
+    findings: [{ id:'F-001', title: 'Controller executed build', severity: 'INFO', evidence_type: 'OBSERVED', evidence: 'The controller supplied execution evidence.', location: 'app.mjs:1', recommended_fix: 'None.', materiality:'INFORMATIONAL', invariant:'The controller records the configured build.', consequence:'No defect established.', smallest_correction:'None.', evidence_ids: [ids[0]] }],
+    product_assessment:{purpose_fit:'Fixture',strengths:[],opportunities:[],reuse_or_simplify:[]},
+    complexity_assessment:{status:'CLEAR',summary:'No additional architecture is evidenced.',items:[]},
+    decision_control:{gate_context:{current_gate:null,gate_question:null,pass_criteria:[]},evidence_ceiling:'MOVE_TO_CONTROLLED_RUNTIME',audit_loop_risk:'UNKNOWN',blocking_finding_ids:[],deferred_finding_ids:[],primary_next_action:{title:'Review the executed check.',substeps:[]}},
     proposed_patch: null, reuse_assessment: [], commercial_risks: [], unverified: [], next_actions: [],
   }));
 }

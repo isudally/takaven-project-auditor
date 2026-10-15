@@ -24,7 +24,10 @@ if (schema.endsWith('investigation-request.schema.json')) {
   writeFileSync(output, JSON.stringify({
     project: 'model-project', commit: 'model-commit', verdict: 'CONTINUE', executive_summary: 'The explicitly requested correction passed the controller checks.',
     runtime_status: 'PASS', runtime_evidence: [{ check: 'build', status: 'PASS', command: 'node -e process.stdout.write("build")', observation: 'The approved disposable correction build passed.', negative_control: 'The baseline was separately executed before correction verification.', evidence_ids: [evidenceId] }],
-    findings: [{ title: 'Correction verified', severity: 'INFO', evidence_type: 'OBSERVED', evidence: 'The controller recorded a successful correction verification.', location: 'app.mjs:1', recommended_fix: 'Retain the verified correction.', evidence_ids: [evidenceId] }],
+    findings: [{ id:'F-001', title: 'Correction verified', severity: 'INFO', evidence_type: 'OBSERVED', evidence: 'The controller recorded a successful correction verification.', location: 'app.mjs:1', recommended_fix: 'Retain the verified correction.', materiality:'INFORMATIONAL', invariant:'The correction check is recorded.', consequence:'No defect established.', smallest_correction:'None.', evidence_ids: [evidenceId] }],
+    product_assessment:{purpose_fit:'Fixture',strengths:[],opportunities:[],reuse_or_simplify:[]},
+    complexity_assessment:{status:'CLEAR',summary:'No additional architecture is evidenced.',items:[]},
+    decision_control:{gate_context:{current_gate:null,gate_question:null,pass_criteria:[]},evidence_ceiling:'MOVE_TO_CONTROLLED_RUNTIME',audit_loop_risk:'UNKNOWN',blocking_finding_ids:[],deferred_finding_ids:[],primary_next_action:{title:'Review the executed correction check.',substeps:[]}},
     proposed_patch: null, reuse_assessment: [], commercial_risks: [], unverified: [], next_actions: [],
   }));
 }

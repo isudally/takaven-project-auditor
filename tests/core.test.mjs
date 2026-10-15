@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseArgs, normalizeGithub, validateGitRef, validateReport, renderMarkdown, promptForRun, applyTrustedMetadata, validateProjectBrief, validateBriefProvenance } from '../src/core.mjs';
+import { parseArgs, normalizeGithub, validateGitRef, validateReport, renderMarkdown, promptForRun, applyTrustedMetadata, validateProjectBrief, validateBriefProvenance, validateGateContext, validateAuditHistory } from '../src/core.mjs';
 import { buildCodexArgs, resolveCodexCommand } from '../src/audit.mjs';
 import { createEvidenceRegistry, captureEvidence, redactEvidenceText } from '../src/evidence.mjs';
 import { readFileSync } from 'node:fs';
@@ -29,6 +29,12 @@ test('brief provenance is controller-selected and backward compatible',()=>{
   assert.throws(()=>parseArgs(['--repo','https://github.com/a/b','--brief','package.json','--brief-provenance','claimed-by-model']),/must be/);
   assert.throws(()=>validateProjectBrief({...brief,provenance:'owner-confirmed'}),/Unexpected project brief field/);
   assert.equal(validateBriefProvenance('unspecified'),'unspecified');
+});
+test('trusted gate context is explicit and model output cannot invent it',()=>{
+  const gate={current_gate:'F1',gate_question:'Can the authority boundary be proven?',pass_criteria:['No bypass']};
+  assert.deepEqual(validateGateContext(gate),gate);
+  const result=applyTrustedMetadata({...sample,decision_control:{gate_context:{current_gate:'invented',gate_question:'fake',pass_criteria:['fake']},evidence_ceiling:'UNKNOWN',audit_loop_risk:'UNKNOWN',blocking_finding_ids:[],deferred_finding_ids:[],primary_next_action:{title:'Review',substeps:[]}}},{project:'trusted',commit:'abc',mode:'inspect',source:'repo',auditedAt:'now',gateContext:gate});
+  assert.deepEqual(result.decision_control.gate_context,gate);
 });
 test('Codex automation uses an ephemeral session under the controller sandbox',()=>assert.ok(buildCodexArgs({mode:'inspect',schema:'schema.json',responsePath:'response.json'}).includes('--ephemeral')));
 test('Codex report schema requires every declared top-level property',()=>{
@@ -116,6 +122,29 @@ test('accepts a model patch as data without treating it as controller evidence',
   const report = {...sample, proposed_patch:'--- a/src/app.js\n+++ b/src/app.js\n@@\n-x\n+y'};
   assert.equal(validateReport(report).proposed_patch.includes('src/app.js'),true);
   assert.match(renderMarkdown(report,{source:'repo',mode:'inspect',timestamp:'now'}),/Proposed patch/);
+});
+test('new reports require complexity, finding materiality and decision controls',()=>{
+  const registry=createEvidenceRegistry({source:'fixture',commit:'abc'});
+  const id=captureEvidence(registry,{type:'source',action:'source_read',location:'app.mjs',content_hash:'sha256:test',content:'evidence',outcome:'retrieved'});
+  const finding={id:'F-001',title:'Risk',severity:'HIGH',evidence_type:'OBSERVED',evidence:'Observed risk.',location:'app.mjs:1',recommended_fix:'Make the invariant true.',materiality:'BLOCKER',invariant:'Required behavior holds.',consequence:'Users are affected.',smallest_correction:'Fix the narrow path.',evidence_ids:[id]};
+  const report={...sample,commit:'abc',runtime_status:'NOT RUN',runtime_evidence:[],findings:[finding],product_assessment:{purpose_fit:'Fit',strengths:[],opportunities:[],reuse_or_simplify:[]},complexity_assessment:{status:'CHALLENGE',summary:'A narrow risk is present.',items:[]},decision_control:{gate_context:{current_gate:null,gate_question:null,pass_criteria:[]},evidence_ceiling:'SOURCE_REVIEW_STILL_USEFUL',audit_loop_risk:'UNKNOWN',blocking_finding_ids:['F-001'],deferred_finding_ids:[],primary_next_action:{title:'Fix the invariant.',substeps:[]}}};
+  assert.doesNotThrow(()=>validateReport(report,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}));
+  const {complexity_assessment: _missingComplexity, ...withoutComplexity}=report;
+  void _missingComplexity;
+  assert.throws(()=>validateReport(withoutComplexity,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}),/Missing report field: complexity_assessment/);
+  assert.throws(()=>validateReport({...report,complexity_assessment:undefined},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}),/complexity_assessment must be an object/);
+  assert.throws(()=>validateReport({...report,decision_control:{...report.decision_control,deferred_finding_ids:['F-001']}},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}),/both blocking and deferred/);
+  assert.throws(()=>validateReport({...report,complexity_assessment:{...report.complexity_assessment,status:'BLOCK'},verdict:'CONTINUE'},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}),/Complexity BLOCK/);
+});
+test('legacy reports render with safe UNKNOWN controls',()=>{
+  const md=renderMarkdown(sample,{source:'repo',mode:'inspect',timestamp:'now'});
+  assert.match(md,/Complexity gate: \*\*UNKNOWN\*\*/);
+  assert.match(md,/Audit-loop risk: \*\*UNKNOWN\*\*/);
+});
+test('validated audit history is required for delta context and HIGH loop risk',()=>{
+  assert.throws(()=>validateAuditHistory({previous_commit:'abc'}),/controller-validated/);
+  const history=validateAuditHistory({validated:true,previous_commit:'a'.repeat(40),previous_report:{commit:'a'.repeat(40),findings:[{id:'F-001'}]},repeated_same_gate:true,narrowing_findings:true,remaining_runtime_uncertainty:true,diminishing_source_value:true});
+  assert.equal(history.previous_finding_ids[0],'F-001');
 });
 test('controller metadata overrides model identity',()=>{
   const result=applyTrustedMetadata(sample,{project:'trusted',commit:'abc123',mode:'inspect',source:'repo',auditedAt:'2026-10-11T00:00:00.000Z'});
