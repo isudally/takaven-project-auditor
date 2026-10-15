@@ -31,15 +31,18 @@ test('controller snapshot reads source, withholds sensitive files, and redacts s
 
 test('redacts JavaScript/TypeScript declarations and inline credential configuration',()=>{
   const source = [
-    'const apiKey = "synthetic-api-key-value";',
-    "let clientSecret = 'synthetic-client-secret-value';",
-    'const config = { access_token: "synthetic-access-token-value" };',
+    'const apiKey = "SYNTH_API_KEY_123";',
+    'const password = "SYNTH_PASSWORD_456";',
+    'const serviceToken = "SYNTH_TOKEN_789";',
+    'const service_token = "SYNTH_SVC_UNDERSCORE";',
+    "let clientSecret = 'SYNTH_CLIENT_SECRET_111';",
+    'const config = { access_token: "SYNTH_ACCESS_TOKEN_222" };',
     'const harmless = "keep-this";'
   ].join('\n');
   const redacted = redactEvidenceText(source);
-  assert.doesNotMatch(redacted,/synthetic-(?:api-key|client-secret|access-token)-value/);
+  assert.doesNotMatch(redacted,/SYNTH_(?:API_KEY_123|PASSWORD_456|TOKEN_789|SVC_UNDERSCORE|CLIENT_SECRET_111|ACCESS_TOKEN_222)/);
   assert.match(redacted,/const harmless = "keep-this"/);
-  assert.doesNotMatch(JSON.stringify(sanitiseEvidenceValue({content:source})),/synthetic-(?:api-key|client-secret|access-token)-value/);
+  assert.doesNotMatch(JSON.stringify(sanitiseEvidenceValue({content:source})),/SYNTH_(?:API_KEY_123|PASSWORD_456|TOKEN_789|SVC_UNDERSCORE|CLIENT_SECRET_111|ACCESS_TOKEN_222)/);
 });
 
 test('snapshot prioritizes executable flow and local imports before documentation',()=>{

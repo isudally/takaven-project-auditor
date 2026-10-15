@@ -579,9 +579,10 @@ export function writeAuditArtifact(path, content) {
   if (existing?.isSymbolicLink()) throw new Error(`Audit artifact destination cannot be a symbolic link: ${path}`);
   const noFollow = constants.O_NOFOLLOW ?? 0;
   try {
-    writeFileSync(path, content, { mode: 0o600, flag: constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | noFollow });
+    writeFileSync(path, content, { mode: 0o600, flag: constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollow });
   } catch (error) {
     if (error?.code === 'ELOOP') throw new Error(`Audit artifact destination cannot be a symbolic link: ${path}`);
+    if (error?.code === 'EEXIST') throw new Error(`Audit artifact destination already exists: ${path}`);
     throw error;
   }
 }

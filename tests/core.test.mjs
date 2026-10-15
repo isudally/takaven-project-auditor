@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, symlinkSync, linkSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs, normalizeGithub, validateGitRef, validateReport, renderMarkdown, promptForRun, applyTrustedMetadata, validateProjectBrief, validateBriefProvenance, validateGateContext, validateAuditHistory, readAuditHistory } from '../src/core.mjs';
@@ -215,6 +215,22 @@ test('refuses to follow an existing symlink when writing an audit artifact',()=>
       throw error;
     }
     assert.throws(()=>writeAuditArtifact(artifactPath,'attacker-controlled'),/symbolic link/);
+    assert.equal(readFileSync(protectedPath,'utf8'),'original');
+  } finally { rmSync(root,{recursive:true,force:true}); }
+});
+test('refuses to overwrite an existing hard-linked audit artifact',()=>{
+  const root=mkdtempSync(join(tmpdir(),'takaven-artifact-hardlink-'));
+  try {
+    const protectedPath=join(root,'protected.txt');
+    const artifactPath=join(root,'report.json');
+    writeFileSync(protectedPath,'original');
+    try {
+      linkSync(protectedPath,artifactPath);
+    } catch (error) {
+      if (['EPERM','EACCES','UNKNOWN'].includes(error?.code)) return;
+      throw error;
+    }
+    assert.throws(()=>writeAuditArtifact(artifactPath,'attacker-controlled'),/already exists|symbolic link/);
     assert.equal(readFileSync(protectedPath,'utf8'),'original');
   } finally { rmSync(root,{recursive:true,force:true}); }
 });
