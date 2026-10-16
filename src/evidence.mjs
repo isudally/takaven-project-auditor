@@ -3,12 +3,22 @@ import { createHash } from 'node:crypto';
 const ID_PATTERN = /^ev-[a-f0-9]{16}$/;
 
 const SECRET_KEY = /^(?:api[_-]?key|secret|token|password|passwd|private[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token)$/i;
+const COMPOUND_SECRET_KEY = /^(?:api|auth|access|client|service|private|refresh)(?:[_-]?)(?:key|secret|token|password|passwd)$/i;
 const TOKEN_VALUE = /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|AKIA[A-Z0-9]{12,}|xox[baprs]-[A-Za-z0-9-]{12,})\b/g;
+const JS_SECRET_DECLARATION = /\b(?:const|let|var)\s+([A-Za-z_$][\w$-]*)\s*=\s*(['"`])([^\r\n]*?)\2/g;
+const INLINE_SECRET_ASSIGNMENT = /\b([A-Za-z_$][\w$-]*)\b\s*[:=]\s*(['"`])([^\r\n]*?)\2/gi;
 const SOURCE_EVIDENCE_TYPES = new Set(['source_snapshot', 'source']);
 const EXECUTION_EVIDENCE_TYPES = new Set(['executed_command', 'browser_execution', 'runner_execution']);
 
+function isSecretKey(key) {
+  const text = String(key);
+  return SECRET_KEY.test(text) || COMPOUND_SECRET_KEY.test(text);
+}
+
 export function redactEvidenceText(value) {
   return String(value)
+    .replace(JS_SECRET_DECLARATION, (match, key, quote) => isSecretKey(key) ? `${match.slice(0, match.indexOf(quote) + 1)}<REDACTED>${quote}` : match)
+    .replace(INLINE_SECRET_ASSIGNMENT, (match, key, quote) => isSecretKey(key) ? `${match.slice(0, match.indexOf(quote) + 1)}<REDACTED>${quote}` : match)
     .replace(/((?:^|[\r\n])\s*["']?(?:api[_-]?key|secret|token|password|passwd|private[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token)["']?\s*[:=]\s*["']?)([^\r\n"'`,}]+)(["']?)/gim, '$1<REDACTED>$3')
     .replace(TOKEN_VALUE, '<REDACTED>');
 }
@@ -17,7 +27,7 @@ export function sanitiseEvidenceValue(value) {
   if (typeof value === 'string') return redactEvidenceText(value);
   if (Array.isArray(value)) return value.map(sanitiseEvidenceValue);
   if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).map(([key, nested]) => [key, SECRET_KEY.test(key) ? '<REDACTED>' : sanitiseEvidenceValue(nested)]));
+    return Object.fromEntries(Object.entries(value).map(([key, nested]) => [key, isSecretKey(key) ? '<REDACTED>' : sanitiseEvidenceValue(nested)]));
   }
   return value;
 }
@@ -180,3 +190,4 @@ export function evidenceRegistryIndex(registry) {
     })),
   };
 }
+
