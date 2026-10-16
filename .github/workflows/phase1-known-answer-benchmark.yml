@@ -1,0 +1,307 @@
+name: Phase 1 benchmark preflight and comparison
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: Run only the preflight, or the approved comparison
+        required: true
+        type: choice
+        options:
+          - preflight
+          - benchmark
+        default: preflight
+      authorize_api:
+        description: Explicitly authorize one bounded API-backed run
+        required: true
+        type: boolean
+        default: false
+      confirm_benchmark:
+        description: Separately confirm the comparative benchmark after preflight
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase1-benchmark
+  cancel-in-progress: false
+
+env:
+  BASELINE_SHA: bc160c5f067a0fbd5967b12572594d66ebfe621c
+  CANDIDATE_SHA: 0d9549f83899a4f6d74a721c81534714beca7b51
+
+jobs:
+  preflight:
+    if: ${{ inputs.authorize_api == true && inputs.stage == 'preflight' }}
+    runs-on: ubuntu-latest
+    environment: takaven-preflight
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out candidate source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: candidate-source
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Prepare clean preflight workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          model="$RUNNER_TEMP/preflight-model"
+          fixture="$RUNNER_TEMP/preflight-fixture"
+          rm -rf "$model" "$fixture"
+          mkdir -p "$model" "$fixture"
+
+          cp -a candidate-source/src "$model/src"
+          cp -a candidate-source/schemas "$model/schemas"
+          cp candidate-source/package.json "$model/package.json"
+          if [ -f candidate-source/package-lock.json ]; then
+            cp candidate-source/package-lock.json "$model/package-lock.json"
+          fi
+
+          cat > "$fixture/README.md" <<'EOF'
+          # Preflight fixture
+          This is a tiny read-only source fixture for controller startup validation.
+          EOF
+          mkdir -p "$fixture/src"
+          cat > "$fixture/src/main.mjs" <<'EOF'
+          export function greet(name) {
+            return "Hello " + name;
+          }
+          EOF
+          git -C "$fixture" init -q
+          git -C "$fixture" config user.name takaven-preflight
+          git -C "$fixture" config user.email takaven-preflight@example.invalid
+          git -C "$fixture" add .
+          git -C "$fixture" commit -qm preflight
+
+          rm -rf candidate-source
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          cp -a "$model/." "$GITHUB_WORKSPACE/"
+          npm install --ignore-scripts --no-audit --no-fund
+          mkdir -p preflight-artifacts
+
+          node -e 'const fs=require("node:fs"); fs.writeFileSync(process.env.RUNNER_TEMP+"/preflight-brief.json", JSON.stringify({name:"TAKAVEN nested-auth preflight", purpose:"Validate one small read-only source review", users:["operators"], workflows:["source inspection"], objectives:["produce a validated report"], constraints:["no runtime execution","no external systems"]}, null, 2));'
+
+          find src schemas -type f -print0 | sort -z | xargs -0 sha256sum > preflight-artifacts/source-before.sha256
+          cat > preflight-prompt.md <<'EOF'
+          Run exactly one normal TAKAVEN Project Auditor CLI inspection against the tiny fixture.
+          Use no --investigate and do not access any repository, manifest, evaluator, credential, or path outside the workspace and the named fixture.
+          Execute:
+          node "$GITHUB_WORKSPACE/src/audit.mjs" --path "$RUNNER_TEMP/preflight-fixture" --brief "$RUNNER_TEMP/preflight-brief.json" --brief-provenance owner-confirmed --mode inspect --out "$GITHUB_WORKSPACE/preflight-artifacts/report"
+          The controller must receive and validate the structured report. Do not edit JSON manually, retry the model request, or modify tracked source.
+          EOF
+
+      - name: Run nested Codex preflight
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt-file: preflight-prompt.md
+          output-file: preflight-artifacts/codex-action-output.md
+          codex-args: '["--ephemeral"]'
+          codex-home: ${{ runner.temp }}/codex-home
+          sandbox: workspace-write
+          safety-strategy: drop-sudo
+          codex-version: 0.162.1
+
+      - name: Validate preflight and source immutability
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -u
+          status=0
+          report="preflight-artifacts/report/report.json"
+          if [ ! -f "$report" ]; then
+            echo "Preflight did not produce a validated report." >&2
+            status=1
+          else
+            node -e 'JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8"))' "$report" || status=1
+          fi
+          find src schemas -type f -print0 | sort -z | xargs -0 sha256sum > preflight-artifacts/source-after.sha256
+          if ! diff -u preflight-artifacts/source-before.sha256 preflight-artifacts/source-after.sha256; then
+            echo "The nested run modified allowlisted auditor source." >&2
+            status=1
+          fi
+          exit "$status"
+
+      - name: Upload preflight evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: takaven-preflight-${{ github.run_id }}
+          path: preflight-artifacts
+          if-no-files-found: warn
+          retention-days: 7
+  benchmark-model:
+    if: ${{ inputs.authorize_api == true && inputs.stage == 'benchmark' && inputs.confirm_benchmark == true }}
+    runs-on: ubuntu-latest
+    environment: takaven-benchmark
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out candidate source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: candidate-source
+
+      - name: Check out baseline source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BASELINE_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: baseline-source
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Prepare blind model workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          fixture="$RUNNER_TEMP/known-answer-fixture"
+          candidate="$RUNNER_TEMP/auditor-candidate"
+          baseline="$RUNNER_TEMP/auditor-baseline"
+          rm -rf "$fixture" "$candidate" "$baseline"
+          mkdir -p "$fixture" "$candidate" "$baseline"
+
+          node candidate-source/benchmarks/create-known-answer-fixture.mjs "$fixture"
+          git -C "$fixture" init -q
+          git -C "$fixture" config user.name takaven-benchmark
+          git -C "$fixture" config user.email takaven-benchmark@example.invalid
+          git -C "$fixture" add .
+          git -C "$fixture" commit -qm fixture
+
+          for source in candidate baseline; do
+            if [ "$source" = candidate ]; then from=candidate-source; to="$candidate"; else from=baseline-source; to="$baseline"; fi
+            cp -a "$from/src" "$to/src"
+            cp -a "$from/schemas" "$to/schemas"
+            cp "$from/package.json" "$to/package.json"
+            if [ -f "$from/package-lock.json" ]; then cp "$from/package-lock.json" "$to/package-lock.json"; fi
+          done
+
+          node -e 'const fs=require("node:fs"); fs.writeFileSync(process.env.RUNNER_TEMP+"/neutral-brief.json", JSON.stringify({name:"Known-answer workflow fixture", purpose:"Evaluate a small multi-step business workflow", users:["operators"], workflows:["account setup","policy publication","contact enquiry"], objectives:["preserve reliable completion and user-visible outcomes"], constraints:["read-only source review","no runtime execution"]}, null, 2));'
+
+          rm -rf candidate-source baseline-source
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          cp -a "$candidate/." "$GITHUB_WORKSPACE/"
+          npm install --ignore-scripts --no-audit --no-fund
+          mkdir -p benchmark-artifacts
+          find src schemas -type f -print0 | sort -z | xargs -0 sha256sum > benchmark-artifacts/source-before.sha256
+          printf 'candidate_sha=%s\nbaseline_sha=%s\nfixture_sha=%s\n' "$CANDIDATE_SHA" "$BASELINE_SHA" "$(git -C "$fixture" rev-parse HEAD)" > benchmark-artifacts/run-context.txt
+
+          cat > benchmark-prompt.md <<'EOF'
+          Run one controlled, read-only known-answer comparison using only the prepared synthetic fixture and the two auditor source bundles.
+          Do not inspect or access any benchmark manifest, evaluator, benchmark tests, Git history, external repository, production system, credential, or path outside the named fixture and the two auditor bundles.
+          The expected answers are intentionally unavailable to you.
+          Run:
+          1. Candidate: node "$GITHUB_WORKSPACE/src/audit.mjs" --path "$RUNNER_TEMP/known-answer-fixture" --brief "$RUNNER_TEMP/neutral-brief.json" --brief-provenance owner-confirmed --mode inspect --investigate --out "$GITHUB_WORKSPACE/benchmark-artifacts/candidate"
+          2. Baseline: node "$RUNNER_TEMP/auditor-baseline/src/audit.mjs" --path "$RUNNER_TEMP/known-answer-fixture" --brief "$RUNNER_TEMP/neutral-brief.json" --brief-provenance owner-confirmed --mode inspect --investigate --out "$GITHUB_WORKSPACE/benchmark-artifacts/baseline"
+          Then perform one separate direct Codex review of the same fixture and save it as "$GITHUB_WORKSPACE/benchmark-artifacts/direct-codex.md".
+          Preserve reports, evidence registries, metadata, investigation artifacts and exact command errors. Do not edit generated JSON manually, retry a failed model request, or modify auditor source.
+          EOF
+
+      - name: Run blind model comparison
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt-file: benchmark-prompt.md
+          output-file: benchmark-artifacts/codex-action-output.md
+          codex-args: '["--ephemeral"]'
+          codex-home: ${{ runner.temp }}/codex-home
+          sandbox: workspace-write
+          safety-strategy: drop-sudo
+          codex-version: 0.162.1
+
+      - name: Validate model source immutability
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -u
+          find src schemas -type f -print0 | sort -z | xargs -0 sha256sum > benchmark-artifacts/source-after.sha256
+          diff -u benchmark-artifacts/source-before.sha256 benchmark-artifacts/source-after.sha256
+
+      - name: Upload model evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: takaven-benchmark-model-${{ github.run_id }}
+          path: benchmark-artifacts
+          if-no-files-found: warn
+          retention-days: 7
+
+  evaluate:
+    if: ${{ always() && inputs.authorize_api == true && inputs.stage == 'benchmark' && inputs.confirm_benchmark == true }}
+    needs: benchmark-model
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out evaluator only after model execution
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Download model artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: takaven-benchmark-model-${{ github.run_id }}
+          path: model-artifacts
+
+      - name: Evaluate with trusted manifest
+        shell: bash
+        run: |
+          set -u
+          mkdir -p evaluation-artifacts
+          for variant in baseline candidate; do
+            report="model-artifacts/benchmark-artifacts/$variant/report.json"
+            evidence="model-artifacts/benchmark-artifacts/$variant/evidence-registry.json"
+            if [ -f "$report" ] && [ -f "$evidence" ]; then
+              if ! node benchmarks/evaluate-known-answer.mjs \
+                --report "$report" \
+                --evidence "$evidence" \
+                --manifest benchmarks/known-answer-manifest.json \
+                > "evaluation-artifacts/$variant-evaluation.json"; then
+                printf '{"status":"EVALUATOR_ERROR"}\n' > "evaluation-artifacts/$variant-evaluation.json"
+              fi
+            else
+              printf '{"status":"NOT_RUN","reason":"model report or evidence artifact missing"}\n' > "evaluation-artifacts/$variant-evaluation.json"
+            fi
+          done
+          cp -f model-artifacts/benchmark-artifacts/run-context.txt evaluation-artifacts/run-context.txt 2>/dev/null || true
+
+      - name: Upload trusted evaluation
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: takaven-benchmark-evaluation-${{ github.run_id }}
+          path: evaluation-artifacts
+          if-no-files-found: warn
+          retention-days: 7
+
