@@ -286,7 +286,7 @@ jobs:
           rm -rf direct-context/fixture/.git
           cp "$RUNNER_TEMP/neutral-brief.json" direct-context/neutral-brief.json
           (cd direct-context/fixture && find . -type f -print0 | sort -z | xargs -0 sha256sum) > direct-context/fixture.sha256
-          sha256sum direct-context/neutral-brief.json > direct-context/neutral-brief.sha256
+          sha256sum direct-context/neutral-brief.json | awk '{print $1}' > direct-context/neutral-brief.sha256
 
       - name: Upload direct-control context
         if: ${{ always() }}
@@ -374,7 +374,7 @@ jobs:
           status=0
           if [ -d "$RUNNER_TEMP/known-answer-fixture" ] && [ -f direct-artifacts/fixture-before.sha256 ]; then
             (cd "$RUNNER_TEMP/known-answer-fixture" && find . -type f -print0 | sort -z | xargs -0 sha256sum) > direct-artifacts/fixture-after.sha256
-            sha256sum "$RUNNER_TEMP/neutral-brief.json" > direct-artifacts/neutral-brief-after.sha256
+            sha256sum "$RUNNER_TEMP/neutral-brief.json" | awk '{print $1}' > direct-artifacts/neutral-brief-after.sha256
             diff -u direct-artifacts/fixture-before.sha256 direct-artifacts/fixture-after.sha256 || status=1
             diff -u direct-artifacts/neutral-brief-before.sha256 direct-artifacts/neutral-brief-after.sha256 || status=1
           else
