@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "note": "Evaluator-only expectations. Never copy this file into the audited fixture or the owner brief.",
+  "expected": [
+    {"id":"KA-001","path":"src/flows/account-setup.mjs","finding_keywords":["checklist","partial","success"],"evidence_keywords":["assignDefaults","ok: true"],"reject_keywords":["always assigned","no partial"],"class":"defect"},
+    {"id":"KA-002","path":"src/flows/policy-publish.mjs","finding_keywords":["version","content","acknowledge"],"evidence_keywords":["replace","markPublished","acknowledge"],"reject_keywords":["immutable","bound"],"class":"risk"},
+    {"id":"KA-003","path":"src/security/diagnostics.mjs","finding_keywords":["email","log"],"evidence_keywords":["logger.info","email"],"reject_keywords":["redacted","not logged"],"class":"defect"},
+    {"id":"KA-004","path":"src/security/admin.mjs","finding_keywords":["administrator","last","access"],"evidence_keywords":["administrators <= 1","delete"],"reject_keywords":["protected","cannot remove"],"class":"defect"},
+    {"id":"KA-005","path":"src/inquiries/contact.mjs","finding_keywords":["setup","inquiry","context"],"evidence_keywords":["setup.update","email.send"],"reject_keywords":["context preserved","passed through"],"class":"defect"},
+    {"id":"KA-006","path":"src/notifications/publish.mjs","finding_keywords":["notify","publication","route"],"evidence_keywords":["publishFromDefaultRoute","publications.create"],"reject_keywords":["notification sent"],"class":"defect"},
+    {"id":"KA-007","path":"src/heldout/retry.mjs","contract_path":"docs/workflow-requirements.md","finding_keywords":["retry","duplicate","idempot"],"evidence_keywords":["retrySubmission","transport.send"],"contract_keywords":["retried","duplicate external effect"],"reject_keywords":["idempotent","deduplicated"],"class":"held_out"}
+  ],
+  "clean_controls": [
+    {"id":"CLEAN-001","path":"src/controls/healthy.mjs","forbidden_keywords":["defect","broken","unsafe","vulnerability","missing"]}
+  ]
+}

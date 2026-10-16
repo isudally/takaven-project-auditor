@@ -1,0 +1,101 @@
+name: Phase 1 known-answer benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      authorize_api:
+        description: Explicitly authorize one bounded API-backed benchmark run
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase1-known-answer-benchmark
+  cancel-in-progress: false
+
+env:
+  BASELINE_SHA: bc160c5f067a0fbd5967b12572594d66ebfe621c
+  FIXTURE_GENERATOR: benchmarks/create-known-answer-fixture.mjs
+
+jobs:
+  benchmark:
+    if: inputs.authorize_api == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out candidate auditor
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Prepare isolated fixture and baseline checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --ignore-scripts --no-audit --no-fund
+          node "$FIXTURE_GENERATOR" "$RUNNER_TEMP/known-answer-fixture"
+          git -C "$RUNNER_TEMP/known-answer-fixture" init -q
+          git -C "$RUNNER_TEMP/known-answer-fixture" config user.name benchmark
+          git -C "$RUNNER_TEMP/known-answer-fixture" config user.email benchmark@example.invalid
+          git -C "$RUNNER_TEMP/known-answer-fixture" add .
+          git -C "$RUNNER_TEMP/known-answer-fixture" commit -qm fixture
+          node -e 'const fs=require("fs"); fs.writeFileSync(process.env.RUNNER_TEMP+"/neutral-brief.json", JSON.stringify({name:"Known-answer workflow fixture",purpose:"Evaluate a small multi-step business workflow",users:["operators"],workflows:["account setup","policy publication","contact enquiry"],objectives:["preserve reliable completion and user-visible outcomes"],constraints:["read-only source review","no runtime execution"]}, null, 2));'
+          git fetch --no-tags origin "$BASELINE_SHA"
+          git worktree add --detach "$RUNNER_TEMP/auditor-baseline" "$BASELINE_SHA"
+          mkdir -p benchmark-artifacts
+          printf 'candidate_sha=%s\nbaseline_sha=%s\nfixture_sha=%s\n' \
+            "$(git rev-parse HEAD)" \
+            "$BASELINE_SHA" \
+            "$(git -C "$RUNNER_TEMP/known-answer-fixture" rev-parse HEAD)" \
+            > benchmark-artifacts/run-context.txt
+
+      - name: Run bounded Codex benchmark
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt-file: .github/codex/prompts/phase1-known-answer.md
+          output-file: benchmark-artifacts/codex-action-output.md
+          codex-args: '["--ephemeral"]'
+          sandbox: workspace-write
+          safety-strategy: drop-sudo
+          codex-version: 0.162.1
+
+      - name: Evaluate generated auditor reports
+        if: always()
+        shell: bash
+        run: |
+          set -u
+          for variant in baseline candidate; do
+            report="benchmark-artifacts/$variant/report.json"
+            evidence="benchmark-artifacts/$variant/evidence-registry.json"
+            if [ -f "$report" ] && [ -f "$evidence" ]; then
+              node benchmarks/evaluate-known-answer.mjs \
+                --report "$report" \
+                --evidence "$evidence" \
+                --manifest benchmarks/known-answer-manifest.json \
+                > "benchmark-artifacts/$variant/evaluation.json" || true
+            else
+              printf '{"status":"NOT_RUN","reason":"report or evidence artifact missing"}\n' \
+                > "benchmark-artifacts/$variant/evaluation.json"
+            fi
+          done
+
+      - name: Upload benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase1-known-answer-${{ github.run_id }}
+          path: benchmark-artifacts
+          if-no-files-found: error
+          retention-days: 7
