@@ -91,6 +91,19 @@ jobs:
           git -C "$fixture" add .
           git -C "$fixture" commit -qm preflight
 
+          cat > "$RUNNER_TEMP/takaven-codex-config-adapter" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          forwarded=()
+          for arg in "$@"; do
+            if [ "$arg" != "--ignore-user-config" ]; then
+              forwarded+=("$arg")
+            fi
+          done
+          exec codex "${forwarded[@]}"
+          EOF
+          chmod 700 "$RUNNER_TEMP/takaven-codex-config-adapter"
+
           rm -rf candidate-source
           find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
           cp -a "$model/." "$GITHUB_WORKSPACE/"
@@ -120,6 +133,8 @@ jobs:
           sandbox: workspace-write
           safety-strategy: drop-sudo
           codex-version: 0.162.1
+        env:
+          TAKAVEN_CODEX_BIN: ${{ runner.temp }}/takaven-codex-config-adapter
 
       - name: Validate preflight and source immutability
         if: ${{ always() }}
@@ -219,6 +234,19 @@ jobs:
           sha256sum AGENTS.md investigation-request.schema.json project-brief.schema.json report.schema.json package.json >> benchmark-artifacts/source-before.sha256
           printf 'candidate_sha=%s\nbaseline_sha=%s\nfixture_sha=%s\n' "$CANDIDATE_SHA" "$BASELINE_SHA" "$(git -C "$fixture" rev-parse HEAD)" > benchmark-artifacts/run-context.txt
 
+          cat > "$RUNNER_TEMP/takaven-codex-config-adapter" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          forwarded=()
+          for arg in "$@"; do
+            if [ "$arg" != "--ignore-user-config" ]; then
+              forwarded+=("$arg")
+            fi
+          done
+          exec codex "${forwarded[@]}"
+          EOF
+          chmod 700 "$RUNNER_TEMP/takaven-codex-config-adapter"
+
           cat > benchmark-prompt.md <<'EOF'
           Run one controlled, read-only known-answer comparison using only the prepared synthetic fixture and the two auditor source bundles.
           Do not inspect or access any benchmark manifest, evaluator, benchmark tests, Git history, external repository, production system, credential, or path outside the named fixture and the two auditor bundles.
@@ -226,8 +254,14 @@ jobs:
           Run:
           1. Candidate: node "$GITHUB_WORKSPACE/src/audit.mjs" --path "$RUNNER_TEMP/known-answer-fixture" --brief "$RUNNER_TEMP/neutral-brief.json" --brief-provenance unspecified --mode inspect --investigate --out "$GITHUB_WORKSPACE/benchmark-artifacts/candidate"
           2. Baseline: node "$RUNNER_TEMP/auditor-baseline/src/audit.mjs" --path "$RUNNER_TEMP/known-answer-fixture" --brief "$RUNNER_TEMP/neutral-brief.json" --brief-provenance unspecified --mode inspect --investigate --out "$GITHUB_WORKSPACE/benchmark-artifacts/baseline"
-          Then perform one separate direct Codex review of the same fixture and save it as "$GITHUB_WORKSPACE/benchmark-artifacts/direct-codex.md".
-          Preserve reports, evidence registries, metadata, investigation artifacts and exact command errors. Do not edit generated JSON manually, retry a failed model request, or modify auditor source.
+          Preserve both auditor reports, evidence registries, metadata, investigation artifacts and exact command errors. Do not edit generated JSON manually, retry a failed model request, or modify auditor source.
+          EOF
+
+          cat > direct-prompt.md <<'EOF'
+          This is a fresh direct-review control. Review only the prepared synthetic fixture at "$RUNNER_TEMP/known-answer-fixture" using the neutral brief and read-only source access.
+          Do not inspect prior TAKAVEN reports, benchmark artifacts, manifests, evaluators, benchmark tests, Git history, credentials or external repositories.
+          Save only your direct review as "$GITHUB_WORKSPACE/benchmark-artifacts/direct-codex.md".
+          Clearly label it as a direct Codex review, not a TAKAVEN report. Do not modify source or retry the request.
           EOF
 
       - name: Run blind model comparison
@@ -241,6 +275,49 @@ jobs:
           sandbox: workspace-write
           safety-strategy: drop-sudo
           codex-version: 0.162.1
+        env:
+          TAKAVEN_CODEX_BIN: ${{ runner.temp }}/takaven-codex-config-adapter
+
+      - name: Stage auditor reports outside the direct-review workspace
+        if: ${{ success() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          staging="$RUNNER_TEMP/auditor-report-staging"
+          rm -rf "$staging"
+          mkdir -p "$staging"
+          for variant in candidate baseline; do
+            if [ -d "benchmark-artifacts/$variant" ]; then
+              mv "benchmark-artifacts/$variant" "$staging/$variant"
+            fi
+          done
+          if [ -f benchmark-artifacts/codex-action-output.md ]; then
+            mv benchmark-artifacts/codex-action-output.md "$staging/codex-action-output.md"
+          fi
+          mkdir -p benchmark-artifacts
+
+      - name: Run fresh direct Codex control
+        if: ${{ success() }}
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt-file: direct-prompt.md
+          output-file: benchmark-artifacts/direct-codex-action-output.md
+          codex-args: '["--ephemeral"]'
+          codex-home: ${{ runner.temp }}/codex-home-direct
+          sandbox: workspace-write
+          safety-strategy: drop-sudo
+          codex-version: 0.162.1
+
+      - name: Restore auditor reports for upload
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -u
+          staging="$RUNNER_TEMP/auditor-report-staging"
+          if [ -d "$staging/candidate" ]; then mv "$staging/candidate" benchmark-artifacts/candidate; fi
+          if [ -d "$staging/baseline" ]; then mv "$staging/baseline" benchmark-artifacts/baseline; fi
+          if [ -f "$staging/codex-action-output.md" ]; then mv "$staging/codex-action-output.md" benchmark-artifacts/codex-action-output.md; fi
 
       - name: Validate model source immutability
         if: ${{ always() }}
