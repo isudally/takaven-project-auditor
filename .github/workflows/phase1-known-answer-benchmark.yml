@@ -257,13 +257,6 @@ jobs:
           Preserve both auditor reports, evidence registries, metadata, investigation artifacts and exact command errors. Do not edit generated JSON manually, retry a failed model request, or modify auditor source.
           EOF
 
-          cat > direct-prompt.md <<'EOF'
-          This is a fresh direct-review control. Review only the prepared synthetic fixture at "$RUNNER_TEMP/known-answer-fixture" using the neutral brief and read-only source access.
-          Do not inspect prior TAKAVEN reports, benchmark artifacts, manifests, evaluators, benchmark tests, Git history, credentials or external repositories.
-          Save only your direct review as "$GITHUB_WORKSPACE/benchmark-artifacts/direct-codex.md".
-          Clearly label it as a direct Codex review, not a TAKAVEN report. Do not modify source or retry the request.
-          EOF
-
       - name: Run blind model comparison
         uses: openai/codex-action@v1
         with:
@@ -278,46 +271,31 @@ jobs:
         env:
           TAKAVEN_CODEX_BIN: ${{ runner.temp }}/takaven-codex-config-adapter
 
-      - name: Stage auditor reports outside the direct-review workspace
-        if: ${{ success() }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          staging="$RUNNER_TEMP/auditor-report-staging"
-          rm -rf "$staging"
-          mkdir -p "$staging"
-          for variant in candidate baseline; do
-            if [ -d "benchmark-artifacts/$variant" ]; then
-              mv "benchmark-artifacts/$variant" "$staging/$variant"
-            fi
-          done
-          if [ -f benchmark-artifacts/codex-action-output.md ]; then
-            mv benchmark-artifacts/codex-action-output.md "$staging/codex-action-output.md"
-          fi
-          mkdir -p benchmark-artifacts
-
-      - name: Run fresh direct Codex control
-        if: ${{ success() }}
-        uses: openai/codex-action@v1
-        with:
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          prompt-file: direct-prompt.md
-          output-file: benchmark-artifacts/direct-codex-action-output.md
-          codex-args: '["--ephemeral"]'
-          codex-home: ${{ runner.temp }}/codex-home-direct
-          sandbox: workspace-write
-          safety-strategy: drop-sudo
-          codex-version: 0.162.1
-
-      - name: Restore auditor reports for upload
+      - name: Prepare direct-control context
         if: ${{ always() }}
         shell: bash
         run: |
           set -u
-          staging="$RUNNER_TEMP/auditor-report-staging"
-          if [ -d "$staging/candidate" ]; then mv "$staging/candidate" benchmark-artifacts/candidate; fi
-          if [ -d "$staging/baseline" ]; then mv "$staging/baseline" benchmark-artifacts/baseline; fi
-          if [ -f "$staging/codex-action-output.md" ]; then mv "$staging/codex-action-output.md" benchmark-artifacts/codex-action-output.md; fi
+          rm -rf direct-context
+          mkdir -p direct-context/fixture
+          if [ ! -d "$RUNNER_TEMP/known-answer-fixture" ] || [ ! -f "$RUNNER_TEMP/neutral-brief.json" ]; then
+            printf '%s\n' 'The benchmark fixture or neutral brief was unavailable.' > direct-context/preparation-error.txt
+            exit 1
+          fi
+          cp -a "$RUNNER_TEMP/known-answer-fixture/." direct-context/fixture/
+          rm -rf direct-context/fixture/.git
+          cp "$RUNNER_TEMP/neutral-brief.json" direct-context/neutral-brief.json
+          (cd direct-context/fixture && find . -type f -print0 | sort -z | xargs -0 sha256sum) > direct-context/fixture.sha256
+          sha256sum direct-context/neutral-brief.json > direct-context/neutral-brief.sha256
+
+      - name: Upload direct-control context
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: takaven-benchmark-direct-context-${{ github.run_id }}
+          path: direct-context
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Validate model source immutability
         if: ${{ always() }}
@@ -337,9 +315,85 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-  evaluate:
+  direct-control:
     if: ${{ always() && inputs.authorize_api == true && inputs.stage == 'benchmark' && inputs.confirm_benchmark == true }}
     needs: benchmark-model
+    runs-on: ubuntu-latest
+    environment: takaven-benchmark
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Download fixture context only
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: takaven-benchmark-direct-context-${{ github.run_id }}
+          path: direct-input
+
+      - name: Prepare isolated direct-review workspace
+        shell: bash
+        run: |
+          set -u
+          rm -rf "$RUNNER_TEMP/known-answer-fixture" direct-artifacts
+          mkdir -p direct-artifacts
+          if [ ! -d direct-input/fixture ] || [ ! -f direct-input/neutral-brief.json ] || [ ! -f direct-input/fixture.sha256 ] || [ ! -f direct-input/neutral-brief.sha256 ]; then
+            printf '%s\n' 'Direct-review context artifact was incomplete or unavailable.' > direct-artifacts/preparation-error.txt
+            exit 1
+          fi
+          cp -a direct-input/fixture "$RUNNER_TEMP/known-answer-fixture"
+          cp direct-input/neutral-brief.json "$RUNNER_TEMP/neutral-brief.json"
+          cp direct-input/fixture.sha256 direct-artifacts/fixture-before.sha256
+          cp direct-input/neutral-brief.sha256 direct-artifacts/neutral-brief-before.sha256
+          fixture="$RUNNER_TEMP/known-answer-fixture"
+          cat > direct-prompt.md <<EOF
+          This is a fresh direct-review control. Review only the prepared synthetic fixture at "$fixture" using the neutral brief at "$RUNNER_TEMP/neutral-brief.json" and read-only source access.
+          Do not inspect prior TAKAVEN reports, benchmark artifacts, manifests, evaluators, benchmark tests, Git history, credentials or external repositories.
+          Save only your direct review as "$GITHUB_WORKSPACE/direct-artifacts/direct-codex.md".
+          Clearly label it as a direct Codex review, not a TAKAVEN report. Do not modify source or retry the request.
+          EOF
+
+      - name: Run fresh direct Codex control
+        if: ${{ success() }}
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt-file: direct-prompt.md
+          output-file: direct-artifacts/direct-codex-action-output.md
+          codex-args: '["--ephemeral"]'
+          codex-home: ${{ runner.temp }}/codex-home-direct
+          sandbox: workspace-write
+          safety-strategy: drop-sudo
+          codex-version: 0.162.1
+
+      - name: Validate direct fixture immutability
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -u
+          status=0
+          if [ -d "$RUNNER_TEMP/known-answer-fixture" ] && [ -f direct-artifacts/fixture-before.sha256 ]; then
+            (cd "$RUNNER_TEMP/known-answer-fixture" && find . -type f -print0 | sort -z | xargs -0 sha256sum) > direct-artifacts/fixture-after.sha256
+            sha256sum "$RUNNER_TEMP/neutral-brief.json" > direct-artifacts/neutral-brief-after.sha256
+            diff -u direct-artifacts/fixture-before.sha256 direct-artifacts/fixture-after.sha256 || status=1
+            diff -u direct-artifacts/neutral-brief-before.sha256 direct-artifacts/neutral-brief-after.sha256 || status=1
+          else
+            status=1
+          fi
+          exit "$status"
+
+      - name: Upload direct-review evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: takaven-benchmark-direct-${{ github.run_id }}
+          path: direct-artifacts
+          if-no-files-found: warn
+          retention-days: 7
+
+  evaluate:
+    if: ${{ always() && inputs.authorize_api == true && inputs.stage == 'benchmark' && inputs.confirm_benchmark == true }}
+    needs: [benchmark-model, direct-control]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -362,6 +416,13 @@ jobs:
         with:
           name: takaven-benchmark-model-${{ github.run_id }}
           path: model-artifacts
+
+      - name: Download direct-review artifacts
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: takaven-benchmark-direct-${{ github.run_id }}
+          path: direct-artifacts
 
       - name: Evaluate with trusted manifest
         shell: bash
