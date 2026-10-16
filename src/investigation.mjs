@@ -151,7 +151,7 @@ function readTextRange(absolute, start, length) {
   try {
     const buffer = Buffer.alloc(length);
     const bytesRead = readSync(descriptor, buffer, 0, length, start);
-    return buffer.subarray(0, bytesRead).toString('utf8');
+    return { content: buffer.subarray(0, bytesRead).toString('utf8'), bytesRead };
   } finally {
     closeSync(descriptor);
   }
@@ -197,10 +197,11 @@ export function processInvestigationRequests({ requests, checkout, registry, ret
             files.push({ ...cached, reused: true });
             continue;
           }
-          content = readTextRange(absolute, start, length);
-          if (content.length === 0 && size > start) throw new Error('source range returned no bytes');
+          const rangeResult = readTextRange(absolute, start, length);
+          content = rangeResult.content;
+          const returnedBytes = rangeResult.bytesRead;
+          if (returnedBytes === 0 && size > start) throw new Error('source range returned no bytes');
           if (content.includes('\u0000')) { files.push({ path: relativePath, outcome: 'binary_omitted', file_size: size }); continue; }
-          const returnedBytes = Buffer.byteLength(content);
           const complete = start === 0 && returnedBytes >= size;
           const nextRange = !complete && start + returnedBytes < size ? { start: start + returnedBytes, length: Math.min(size - start - returnedBytes, MAX_RETRIEVAL_BYTES) } : null;
           if (complete) coverageStates.set(relativePath, 'complete');
@@ -244,8 +245,10 @@ export function processInvestigationRequests({ requests, checkout, registry, ret
         let size;
         try { size = statSync(absolute).size; } catch { continue; }
         const scanLength = Math.min(size, MAX_SEARCH_SCAN_BYTES - scanBytes);
-        try { content = readTextRange(absolute, 0, scanLength); } catch { continue; }
-        scanBytes += Buffer.byteLength(content);
+        let scanResult;
+        try { scanResult = readTextRange(absolute, 0, scanLength); } catch { continue; }
+        content = scanResult.content;
+        scanBytes += scanResult.bytesRead;
         if (scanLength < size) {
           scanTruncated = true;
           omittedLargeFiles.add(relativePath);
@@ -299,4 +302,3 @@ export function processInvestigationRequests({ requests, checkout, registry, ret
     searchCoverage,
   };
 }
-

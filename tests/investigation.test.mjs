@@ -140,6 +140,36 @@ test('range reads expose continuation and do not charge duplicate retrievals twi
   } finally { rmSync(checkout, { recursive: true, force: true }); }
 });
 
+test('range coverage uses raw bytes when a UTF-8 character crosses a boundary', () => {
+  const checkout = mkdtempSync(join(tmpdir(), 'takaven-investigation-utf8-range-'));
+  try {
+    writeFileSync(join(checkout, 'unicode.mjs'), '€');
+    const registry = createEvidenceRegistry({ source: 'fixture', commit: 'abc' });
+    const first = processInvestigationRequests({
+      checkout,
+      registry,
+      requests: [{ type: 'source_read', paths: ['unicode.mjs'], ranges: [{ start: 0, length: 1 }] }],
+    });
+    const firstFile = first.results[0].files[0];
+    assert.equal(firstFile.bytes_returned, 1);
+    assert.equal(firstFile.completeness, 'partial');
+    assert.deepEqual(firstFile.range, { start: 0, length: 1 });
+    assert.deepEqual(firstFile.next_range, { start: 1, length: 2 });
+    assert.equal(first.retrievedBytes, 1);
+
+    const second = processInvestigationRequests({
+      checkout,
+      registry,
+      retrievalBytesUsed: first.retrievedBytes,
+      requests: [{ type: 'source_read', paths: ['unicode.mjs'], ranges: [firstFile.next_range] }],
+    });
+    const secondFile = second.results[0].files[0];
+    assert.equal(secondFile.bytes_returned, 2);
+    assert.equal(secondFile.completeness, 'partial');
+    assert.equal(second.retrievedBytes, 3);
+  } finally { rmSync(checkout, { recursive: true, force: true }); }
+});
+
 test('retrieval exhaustion is explicit rather than an unavailable source claim', () => {
   const checkout = mkdtempSync(join(tmpdir(), 'takaven-investigation-exhausted-'));
   try {
@@ -249,4 +279,3 @@ test('malformed correction requests are rejected before patch validation', () =>
   }] };
   assert.throws(() => validateInvestigationResponse(response, registry), /Unsupported investigation request type/);
 });
-
