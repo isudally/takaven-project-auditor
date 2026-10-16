@@ -6,6 +6,7 @@ import { captureEvidence, redactEvidenceText, validateEvidenceIds } from './evid
 export const MAX_INVESTIGATION_ROUNDS = 4;
 export const MAX_REQUESTS_PER_ROUND = 8;
 export const MAX_RETRIEVAL_BYTES = 128 * 1024;
+export const MAX_SEARCH_SCAN_BYTES = 512 * 1024;
 
 // Correction execution is intentionally outside the active auditor protocol.
 // TAKAVEN may recommend a patch as report data, but a separate implementation
@@ -57,7 +58,13 @@ export function validateInvestigationResponse(value, registry) {
     for (const key of Object.keys(request)) if (!requestKeys.has(key)) throw new Error(`Unexpected investigation request field: ${key}`);
     if (!REQUEST_TYPES.has(request.type)) throw new Error(`Unsupported investigation request type: ${request.type}`);
     if (request.reason !== undefined && request.reason !== null && (typeof request.reason !== 'string' || request.reason.length > 1000)) throw new Error(`Invalid request reason ${index}`);
-    if (request.type === 'source_search') safeQuery(request.query);
+    if (request.type === 'source_search') {
+      safeQuery(request.query);
+      if (request.paths !== undefined && request.paths !== null) {
+        if (!Array.isArray(request.paths) || request.paths.length === 0 || request.paths.length > 10) throw new Error('source_search paths must contain 1-10 paths');
+        request.paths.forEach(safeRelativePath);
+      }
+    }
     if (request.type === 'source_read') {
       if (!Array.isArray(request.paths) || request.paths.length === 0 || request.paths.length > 10) throw new Error('source_read requires 1-10 paths');
       request.paths.forEach(safeRelativePath);
@@ -150,7 +157,7 @@ function readTextRange(absolute, start, length) {
   }
 }
 
-export function processInvestigationRequests({ requests, checkout, registry, retrievalBytesUsed = 0, runner, coverageStates = new Map(), touchedPaths = new Set() } = {}) {
+export function processInvestigationRequests({ requests, checkout, registry, retrievalBytesUsed = 0, runner, coverageStates = new Map(), touchedPaths = new Set(), retrievalCache = new Map() } = {}) {
   const results = [];
   let retrievedBytes = retrievalBytesUsed;
   const retrievedPaths = new Set();
@@ -173,45 +180,81 @@ export function processInvestigationRequests({ requests, checkout, registry, ret
         try {
           const range = request.ranges?.[pathIndex];
           size = statSync(absolute).size;
+          if (!range && coverageStates.get(relativePath) === 'complete') {
+            files.push({ path: relativePath, outcome: 'already_available', completeness: 'complete', reused_initial_snapshot: true, bytes_returned: 0 });
+            continue;
+          }
           const remaining = MAX_RETRIEVAL_BYTES - retrievedBytes;
           start = range?.start ?? 0;
           const length = Math.min(range?.length ?? size, remaining);
-          if (remaining <= 0 || length <= 0) throw new Error('retrieval budget exceeded');
+          if (remaining <= 0 || length <= 0) {
+            files.push({ path: relativePath, outcome: 'budget_exhausted', completeness: coverageStates.get(relativePath) ?? 'partial', next_range: { start, length: Math.min(size - start, MAX_RETRIEVAL_BYTES) }, bytes_returned: 0 });
+            continue;
+          }
+          const cacheKey = `read:${relativePath}:${start}:${length}`;
+          const cached = retrievalCache.get(cacheKey);
+          if (cached) {
+            files.push({ ...cached, reused: true });
+            continue;
+          }
           content = readTextRange(absolute, start, length);
+          if (content.length === 0 && size > start) throw new Error('source range returned no bytes');
+          if (content.includes('\u0000')) { files.push({ path: relativePath, outcome: 'binary_omitted', file_size: size }); continue; }
+          const returnedBytes = Buffer.byteLength(content);
+          const complete = start === 0 && returnedBytes >= size;
+          const nextRange = !complete && start + returnedBytes < size ? { start: start + returnedBytes, length: Math.min(size - start - returnedBytes, MAX_RETRIEVAL_BYTES) } : null;
+          if (complete) coverageStates.set(relativePath, 'complete');
+          else if (coverageStates.get(relativePath) !== 'complete') coverageStates.set(relativePath, 'partial');
+          retrievedBytes += returnedBytes;
+          retrievedPaths.add(relativePath);
+          touchedPaths.add(relativePath);
+          const evidenceId = captureSource(registry, relativePath, content, 'source_read');
+          const file = { path: relativePath, evidence_id: evidenceId, content: redactEvidenceText(content), completeness: coverageStates.get(relativePath), file_size: size, range: { start, length: returnedBytes }, next_range: nextRange, bytes_returned: returnedBytes };
+          retrievalCache.set(cacheKey, file);
+          files.push(file);
+          continue;
         } catch (error) {
           files.push({ path: relativePath, outcome: 'unavailable', error: error.message });
           continue;
         }
-        if (content.includes('\u0000')) { files.push({ path: relativePath, outcome: 'binary_omitted' }); continue; }
-        const complete = start === 0 && start + Buffer.byteLength(content) >= size;
-        if (complete) coverageStates.set(relativePath, 'complete');
-        else if (coverageStates.get(relativePath) !== 'complete') coverageStates.set(relativePath, 'partial');
-        retrievedBytes += Buffer.byteLength(content);
-        retrievedPaths.add(relativePath);
-        touchedPaths.add(relativePath);
-        const evidenceId = captureSource(registry, relativePath, content, 'source_read');
-        files.push({ path: relativePath, evidence_id: evidenceId, content: redactEvidenceText(content), completeness: coverageStates.get(relativePath) });
       }
       results.push({ type: request.type, files });
       continue;
     }
     if (request.type === 'source_search') {
+      const searchKey = `search:${request.query}:${(request.paths ?? []).join(',')}:${request.continuation ?? 0}`;
+      const cachedSearch = retrievalCache.get(searchKey);
+      if (cachedSearch) {
+        results.push({ ...cachedSearch, reused: true });
+        searchCoverage.push({ ...(cachedSearch.coverage ?? {}), reused: true });
+        continue;
+      }
       const matches = [];
       const query = request.query;
-      const inventory = walkTextFiles(checkout, 500, request.continuation ?? 0);
+      const unavailablePaths = [];
+      const inventory = request.paths
+        ? { files: request.paths.flatMap(path => { try { return [withinCheckout(checkout, path)]; } catch (error) { unavailablePaths.push({ path, error: error.message }); return []; } }), truncated: false, nextOffset: null, examined: request.paths.length }
+        : walkTextFiles(checkout, 500, request.continuation ?? 0);
+      let scanBytes = 0;
+      let scanTruncated = false;
       for (const absolute of inventory.files) {
-        if (retrievedBytes >= MAX_RETRIEVAL_BYTES) break;
+        if (scanBytes >= MAX_SEARCH_SCAN_BYTES) { scanTruncated = true; break; }
         const relativePath = relative(checkout, absolute).split(sep).join('/');
         let content;
         let size;
         try { size = statSync(absolute).size; } catch { continue; }
-        if (size > MAX_RETRIEVAL_BYTES) { omittedLargeFiles.add(relativePath); continue; }
-        try { content = readTextRange(absolute, 0, Math.min(size, MAX_RETRIEVAL_BYTES - retrievedBytes)); } catch { continue; }
+        const scanLength = Math.min(size, MAX_SEARCH_SCAN_BYTES - scanBytes);
+        try { content = readTextRange(absolute, 0, scanLength); } catch { continue; }
+        scanBytes += Buffer.byteLength(content);
+        if (scanLength < size) {
+          scanTruncated = true;
+          omittedLargeFiles.add(relativePath);
+        }
         if (content.includes('\u0000')) continue;
         const lineMatches = content.split(/\r?\n/).map((line, lineNumber) => ({ lineNumber: lineNumber + 1, line })).filter(item => item.line.toLowerCase().includes(query.toLowerCase())).slice(0, 20);
         if (lineMatches.length === 0) continue;
         const excerpt = redactEvidenceText(lineMatches.map(item => `${item.lineNumber}: ${item.line}`).join('\n'));
-        if (retrievedBytes + Buffer.byteLength(excerpt) > MAX_RETRIEVAL_BYTES) break;
+        if (retrievedBytes + Buffer.byteLength(excerpt) > MAX_RETRIEVAL_BYTES) { scanTruncated = true; break; }
         retrievedBytes += Buffer.byteLength(excerpt);
         retrievedPaths.add(relativePath);
         touchedPaths.add(relativePath);
@@ -219,8 +262,11 @@ export function processInvestigationRequests({ requests, checkout, registry, ret
         const evidenceId = captureSource(registry, relativePath, excerpt, 'source_search');
         matches.push({ path: relativePath, evidence_id: evidenceId, excerpt });
       }
-      searchCoverage.push({ query, continuation: request.continuation ?? 0, examined_files: inventory.examined, truncated: inventory.truncated, next_continuation: inventory.nextOffset, omitted_large_files: [...omittedLargeFiles] });
-      results.push({ type: request.type, query, matches, examined_files: inventory.examined, truncated: inventory.truncated, next_continuation: inventory.nextOffset, omitted_large_files: [...omittedLargeFiles] });
+      const coverage = { query, paths: request.paths ?? null, continuation: request.continuation ?? 0, examined_files: inventory.examined, unavailable_paths: unavailablePaths, truncated: inventory.truncated || scanTruncated, next_continuation: inventory.nextOffset, omitted_large_files: [...omittedLargeFiles], bytes_scanned: scanBytes, scan_byte_budget: MAX_SEARCH_SCAN_BYTES, returned_bytes: matches.reduce((total, match) => total + Buffer.byteLength(match.excerpt), 0) };
+      searchCoverage.push(coverage);
+      const searchResult = { type: request.type, query, matches, examined_files: inventory.examined, unavailable_paths: unavailablePaths, truncated: coverage.truncated, next_continuation: inventory.nextOffset, omitted_large_files: [...omittedLargeFiles], bytes_scanned: scanBytes, scan_byte_budget: MAX_SEARCH_SCAN_BYTES, returned_bytes: coverage.returned_bytes, coverage };
+      retrievalCache.set(searchKey, searchResult);
+      results.push(searchResult);
       continue;
     }
     if (request.type === 'experiment') {
@@ -253,3 +299,4 @@ export function processInvestigationRequests({ requests, checkout, registry, ret
     searchCoverage,
   };
 }
+
