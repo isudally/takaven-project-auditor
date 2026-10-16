@@ -138,10 +138,10 @@ function walkTextFiles(checkout, limit = 500, offset = 0) {
   return { files, truncated, nextOffset: truncated ? offset + files.length : null, examined: seen };
 }
 
-function captureSource(registry, relativePath, content, action) {
+function captureSource(registry, relativePath, content, action, bytes = Buffer.byteLength(content)) {
   const safeContent = redactEvidenceText(content);
   return captureEvidence(registry, {
-    type: 'source', action, location: relativePath, bytes: Buffer.byteLength(content),
+    type: 'source', action, location: relativePath, bytes,
     content_hash: contentHash(safeContent), content: safeContent, outcome: 'retrieved',
   });
 }
@@ -209,7 +209,7 @@ export function processInvestigationRequests({ requests, checkout, registry, ret
           retrievedBytes += returnedBytes;
           retrievedPaths.add(relativePath);
           touchedPaths.add(relativePath);
-          const evidenceId = captureSource(registry, relativePath, content, 'source_read');
+          const evidenceId = captureSource(registry, relativePath, content, 'source_read', returnedBytes);
           const file = { path: relativePath, evidence_id: evidenceId, content: redactEvidenceText(content), completeness: coverageStates.get(relativePath), file_size: size, range: { start, length: returnedBytes }, next_range: nextRange, bytes_returned: returnedBytes };
           retrievalCache.set(cacheKey, file);
           files.push(file);

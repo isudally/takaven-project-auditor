@@ -156,6 +156,7 @@ test('range coverage uses raw bytes when a UTF-8 character crosses a boundary', 
     assert.deepEqual(firstFile.range, { start: 0, length: 1 });
     assert.deepEqual(firstFile.next_range, { start: 1, length: 2 });
     assert.equal(first.retrievedBytes, 1);
+    assert.equal(registry.records.find(record => record.evidence_id === firstFile.evidence_id).bytes, 1);
 
     const second = processInvestigationRequests({
       checkout,
