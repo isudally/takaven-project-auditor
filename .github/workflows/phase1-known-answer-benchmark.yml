@@ -91,6 +91,17 @@ jobs:
             fi
           done
 
+      - name: Reject tracked source changes
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git diff --quiet -- . ':!benchmark-artifacts'; then
+            echo 'The Codex action modified tracked auditor source.' >&2
+            git diff -- . ':!benchmark-artifacts'
+            exit 1
+          fi
+
       - name: Upload benchmark evidence
         if: always()
         uses: actions/upload-artifact@v4
