@@ -146,18 +146,63 @@ function captureSource(registry, relativePath, content, action, bytes = Buffer.b
   });
 }
 
-function readTextRange(absolute, start, length) {
+function utf8TailNeedsContinuation(buffer) {
+  let index = buffer.length - 1;
+  let continuationBytes = 0;
+  while (index >= 0 && (buffer[index] & 0xc0) === 0x80) {
+    continuationBytes += 1;
+    index -= 1;
+  }
+  if (index < 0) return continuationBytes > 0;
+
+  const lead = buffer[index];
+  const expectedBytes = lead < 0x80 ? 1
+    : lead >= 0xc2 && lead <= 0xdf ? 2
+      : lead >= 0xe0 && lead <= 0xef ? 3
+        : lead >= 0xf0 && lead <= 0xf4 ? 4
+          : 0;
+  return expectedBytes > 0 && buffer.length - index < expectedBytes;
+}
+
+function readTextRange(absolute, start, length, maxBytes = length) {
   const descriptor = openSync(absolute, 'r');
   try {
-    const buffer = Buffer.alloc(length);
-    const bytesRead = readSync(descriptor, buffer, 0, length, start);
-    return { content: buffer.subarray(0, bytesRead).toString('utf8'), bytesRead };
+    const chunks = [];
+    const initial = Buffer.alloc(Math.min(length, maxBytes));
+    let bytesRead = readSync(descriptor, initial, 0, initial.length, start);
+    chunks.push(initial.subarray(0, bytesRead));
+
+    // A continuation range must not expose a replacement character merely
+    // because the requested boundary split a valid UTF-8 code point. Extend
+    // only within the caller's existing byte budget and report every byte
+    // actually consumed.
+    while (utf8TailNeedsContinuation(Buffer.concat(chunks)) && bytesRead < maxBytes) {
+      const extra = Buffer.alloc(1);
+      const extraRead = readSync(descriptor, extra, 0, 1, start + bytesRead);
+      if (extraRead === 0) break;
+      chunks.push(extra.subarray(0, extraRead));
+      bytesRead += extraRead;
+    }
+
+    const raw = Buffer.concat(chunks);
+    let content;
+    try {
+      content = new TextDecoder('utf-8', { fatal: true }).decode(raw);
+    } catch {
+      content = raw.toString('utf8');
+    }
+    return {
+      content,
+      bytesRead,
+      boundaryAdjusted: bytesRead > length,
+      boundaryIncomplete: utf8TailNeedsContinuation(raw),
+    };
   } finally {
     closeSync(descriptor);
   }
 }
 
-export function processInvestigationRequests({ requests, checkout, registry, retrievalBytesUsed = 0, runner, coverageStates = new Map(), touchedPaths = new Set(), retrievalCache = new Map() } = {}) {
+export function processInvestigationRequests({ requests, checkout, registry, retrievalBytesUsed = 0, runner, coverageStates = new Map(), coverageKinds = new Map(), touchedPaths = new Set(), retrievalCache = new Map() } = {}) {
   const results = [];
   let retrievedBytes = retrievalBytesUsed;
   const retrievedPaths = new Set();
@@ -197,15 +242,17 @@ export function processInvestigationRequests({ requests, checkout, registry, ret
             files.push({ ...cached, reused: true });
             continue;
           }
-          const rangeResult = readTextRange(absolute, start, length);
+          const rangeResult = readTextRange(absolute, start, length, remaining);
           content = rangeResult.content;
           const returnedBytes = rangeResult.bytesRead;
           if (returnedBytes === 0 && size > start) throw new Error('source range returned no bytes');
           if (content.includes('\u0000')) { files.push({ path: relativePath, outcome: 'binary_omitted', file_size: size }); continue; }
-          const complete = start === 0 && returnedBytes >= size;
+          const complete = (start === 0 && returnedBytes >= size)
+            || (coverageKinds.get(relativePath) === 'source_read' && start + returnedBytes >= size);
           const nextRange = !complete && start + returnedBytes < size ? { start: start + returnedBytes, length: Math.min(size - start - returnedBytes, MAX_RETRIEVAL_BYTES) } : null;
           if (complete) coverageStates.set(relativePath, 'complete');
           else if (coverageStates.get(relativePath) !== 'complete') coverageStates.set(relativePath, 'partial');
+          coverageKinds.set(relativePath, 'source_read');
           retrievedBytes += returnedBytes;
           retrievedPaths.add(relativePath);
           touchedPaths.add(relativePath);
@@ -246,7 +293,7 @@ export function processInvestigationRequests({ requests, checkout, registry, ret
         try { size = statSync(absolute).size; } catch { continue; }
         const scanLength = Math.min(size, MAX_SEARCH_SCAN_BYTES - scanBytes);
         let scanResult;
-        try { scanResult = readTextRange(absolute, 0, scanLength); } catch { continue; }
+        try { scanResult = readTextRange(absolute, 0, scanLength, MAX_SEARCH_SCAN_BYTES - scanBytes); } catch { continue; }
         content = scanResult.content;
         scanBytes += scanResult.bytesRead;
         if (scanLength < size) {
