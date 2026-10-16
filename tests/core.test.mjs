@@ -1,12 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, symlinkSync, linkSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs, normalizeGithub, validateGitRef, validateReport, renderMarkdown, promptForRun, applyTrustedMetadata, validateProjectBrief, validateBriefProvenance, validateGateContext, validateAuditHistory, readAuditHistory } from '../src/core.mjs';
-import { buildCodexArgs, resolveCodexCommand } from '../src/audit.mjs';
+import { buildCodexArgs, resolveCodexCommand, writeAuditArtifact } from '../src/audit.mjs';
 import { createEvidenceRegistry, captureEvidence, redactEvidenceText } from '../src/evidence.mjs';
-import { readFileSync } from 'node:fs';
 
 const sample = {project:'demo',commit:'123',verdict:'MODIFY',executive_summary:'Build is broken.',runtime_status:'FAIL',runtime_evidence:[{check:'web boot',status:'FAIL',command:'npm test',observation:'TypeError',negative_control:'not required'}],findings:[{title:'Boot fails',severity:'HIGH',evidence_type:'OBSERVED',evidence:'startup exception',location:'src/app.js:10',recommended_fix:'fix token'}],reuse_assessment:['reuse templates'],commercial_risks:['no buyer evidence'],unverified:['sales'],next_actions:['fix boot']};
 
@@ -202,6 +201,39 @@ test('readAuditHistory forwards current controller binding context',()=>{
     assert.throws(()=>readAuditHistory(path,{source,commit:currentCommit,gateContext:gate}),/cannot self-assert/);
   } finally { rmSync(root,{recursive:true,force:true}); }
 });
+
+test('refuses to follow an existing symlink when writing an audit artifact',()=>{
+  const root=mkdtempSync(join(tmpdir(),'takaven-artifact-'));
+  try {
+    const protectedPath=join(root,'protected.txt');
+    const artifactPath=join(root,'report.json');
+    writeFileSync(protectedPath,'original');
+    try {
+      symlinkSync(protectedPath,artifactPath);
+    } catch (error) {
+      if (['EPERM','EACCES','UNKNOWN'].includes(error?.code)) return;
+      throw error;
+    }
+    assert.throws(()=>writeAuditArtifact(artifactPath,'attacker-controlled'),/symbolic link/);
+    assert.equal(readFileSync(protectedPath,'utf8'),'original');
+  } finally { rmSync(root,{recursive:true,force:true}); }
+});
+test('refuses to overwrite an existing hard-linked audit artifact',()=>{
+  const root=mkdtempSync(join(tmpdir(),'takaven-artifact-hardlink-'));
+  try {
+    const protectedPath=join(root,'protected.txt');
+    const artifactPath=join(root,'report.json');
+    writeFileSync(protectedPath,'original');
+    try {
+      linkSync(protectedPath,artifactPath);
+    } catch (error) {
+      if (['EPERM','EACCES','UNKNOWN'].includes(error?.code)) return;
+      throw error;
+    }
+    assert.throws(()=>writeAuditArtifact(artifactPath,'attacker-controlled'),/already exists|symbolic link/);
+    assert.equal(readFileSync(protectedPath,'utf8'),'original');
+  } finally { rmSync(root,{recursive:true,force:true}); }
+});
 test('controller metadata overrides model identity',()=>{
   const result=applyTrustedMetadata(sample,{project:'trusted',commit:'abc123',mode:'inspect',source:'repo',auditedAt:'2026-10-11T00:00:00.000Z'});
   assert.deepEqual({project:result.project,commit:result.commit,audit_mode:result.audit_mode},{project:'trusted',commit:'abc123',audit_mode:'inspect'});
@@ -275,3 +307,4 @@ test('Windows resolves the npm Codex command shim for Node child processes', { s
   assert.equal(resolved.args[0], '/d');
   assert.match(resolved.args.at(-1), /codex\.cmd/i);
 });
+

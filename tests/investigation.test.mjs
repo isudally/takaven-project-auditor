@@ -98,6 +98,102 @@ test('source search reports bounded coverage and continuation state', () => {
   } finally { rmSync(checkout, { recursive: true, force: true }); }
 });
 
+test('targeted source search scans only selected workflow files and reports scan cost', () => {
+  const checkout = mkdtempSync(join(tmpdir(), 'takaven-investigation-targeted-search-'));
+  try {
+    mkdirSync(join(checkout, 'src', 'auth'), { recursive: true });
+    mkdirSync(join(checkout, 'src', 'flows'), { recursive: true });
+    writeFileSync(join(checkout, 'src', 'auth', 'guard.mjs'), 'export function approve(user) { return user.role === "owner"; }\n');
+    writeFileSync(join(checkout, 'src', 'flows', 'publish.mjs'), 'export function publish() { return persistApproval(); }\n');
+    for (let index = 0; index < 80; index += 1) writeFileSync(join(checkout, `unrelated-${index}.mjs`), 'unrelated content\n'.repeat(500));
+    const registry = createEvidenceRegistry({ source: 'fixture', commit: 'abc' });
+    const result = processInvestigationRequests({
+      checkout, registry,
+      requests: [{ type: 'source_search', query: 'approve', paths: ['src/auth/guard.mjs', 'src/flows/publish.mjs'] }],
+    });
+    const search = result.results[0];
+    assert.deepEqual(search.coverage.paths, ['src/auth/guard.mjs', 'src/flows/publish.mjs']);
+    assert.equal(search.matches.length, 1);
+    assert.ok(search.bytes_scanned < 2 * 1024);
+    assert.ok(search.returned_bytes < search.bytes_scanned);
+    assert.equal(search.coverage.unavailable_paths.length, 0);
+  } finally { rmSync(checkout, { recursive: true, force: true }); }
+});
+
+test('range reads expose continuation and do not charge duplicate retrievals twice', () => {
+  const checkout = mkdtempSync(join(tmpdir(), 'takaven-investigation-range-'));
+  try {
+    const content = `${'x'.repeat(100 * 1024)}\nworkflow approval\n`;
+    writeFileSync(join(checkout, 'workflow.mjs'), content);
+    const registry = createEvidenceRegistry({ source: 'fixture', commit: 'abc' });
+    const retrievalCache = new Map();
+    const first = processInvestigationRequests({ checkout, registry, retrievalCache, requests: [{ type: 'source_read', paths: ['workflow.mjs'], ranges: [{ start: 0, length: 16 * 1024 }] }] });
+    const firstFile = first.results[0].files[0];
+    assert.equal(firstFile.completeness, 'partial');
+    assert.equal(firstFile.next_range.start, 16 * 1024);
+    const duplicate = processInvestigationRequests({ checkout, registry, retrievalCache, retrievalBytesUsed: first.retrievedBytes, requests: [{ type: 'source_read', paths: ['workflow.mjs'], ranges: [{ start: 0, length: 16 * 1024 }] }] });
+    assert.equal(duplicate.retrievedBytes, first.retrievedBytes);
+    assert.equal(duplicate.results[0].files[0].reused, true);
+    const continuation = processInvestigationRequests({ checkout, registry, retrievalCache, retrievalBytesUsed: first.retrievedBytes, requests: [{ type: 'source_read', paths: ['workflow.mjs'], ranges: [{ start: firstFile.next_range.start, length: firstFile.next_range.length }] }] });
+    assert.ok(continuation.retrievedBytes > first.retrievedBytes);
+    assert.equal(continuation.results[0].files[0].range.start, firstFile.next_range.start);
+  } finally { rmSync(checkout, { recursive: true, force: true }); }
+});
+
+test('adjacent ranges preserve UTF-8 text while charging actual boundary bytes', () => {
+  const checkout = mkdtempSync(join(tmpdir(), 'takaven-investigation-utf8-range-'));
+  try {
+    writeFileSync(join(checkout, 'unicode.mjs'), '€x');
+    const registry = createEvidenceRegistry({ source: 'fixture', commit: 'abc' });
+    const coverageStates = new Map();
+    const coverageKinds = new Map();
+    const first = processInvestigationRequests({
+      checkout,
+      registry,
+      coverageStates,
+      coverageKinds,
+      requests: [{ type: 'source_read', paths: ['unicode.mjs'], ranges: [{ start: 0, length: 1 }] }],
+    });
+    const firstFile = first.results[0].files[0];
+    assert.equal(firstFile.content, '€');
+    assert.equal(firstFile.bytes_returned, 3);
+    assert.equal(firstFile.completeness, 'partial');
+    assert.deepEqual(firstFile.range, { start: 0, length: 3 });
+    assert.deepEqual(firstFile.next_range, { start: 3, length: 1 });
+    assert.equal(first.retrievedBytes, 3);
+    assert.equal(registry.records.find(record => record.evidence_id === firstFile.evidence_id).bytes, 3);
+
+    const second = processInvestigationRequests({
+      checkout,
+      registry,
+      coverageStates,
+      coverageKinds,
+      retrievalBytesUsed: first.retrievedBytes,
+      requests: [{ type: 'source_read', paths: ['unicode.mjs'], ranges: [firstFile.next_range] }],
+    });
+    const secondFile = second.results[0].files[0];
+    assert.equal(secondFile.content, 'x');
+    assert.equal(secondFile.bytes_returned, 1);
+    assert.equal(secondFile.completeness, 'complete');
+    assert.equal(second.retrievedBytes, 4);
+  } finally { rmSync(checkout, { recursive: true, force: true }); }
+});
+
+test('retrieval exhaustion is explicit rather than an unavailable source claim', () => {
+  const checkout = mkdtempSync(join(tmpdir(), 'takaven-investigation-exhausted-'));
+  try {
+    writeFileSync(join(checkout, 'first.mjs'), 'a'.repeat(128 * 1024));
+    writeFileSync(join(checkout, 'second.mjs'), 'important workflow evidence\n');
+    const registry = createEvidenceRegistry({ source: 'fixture', commit: 'abc' });
+    const result = processInvestigationRequests({ checkout, registry, requests: [
+      { type: 'source_read', paths: ['first.mjs'], ranges: [{ start: 0, length: 128 * 1024 }] },
+      { type: 'source_read', paths: ['second.mjs'] },
+    ] });
+    assert.equal(result.results[1].files[0].outcome, 'budget_exhausted');
+    assert.equal(result.results[1].files[0].completeness, 'partial');
+  } finally { rmSync(checkout, { recursive: true, force: true }); }
+});
+
 test('follow-up source reads never load a file beyond the controller byte budget', () => {
   const checkout = mkdtempSync(join(tmpdir(), 'takaven-investigation-budget-'));
   try {
