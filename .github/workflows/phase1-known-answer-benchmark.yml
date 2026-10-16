@@ -67,6 +67,7 @@ jobs:
           prompt-file: .github/codex/prompts/phase1-known-answer.md
           output-file: benchmark-artifacts/codex-action-output.md
           codex-args: '["--ephemeral"]'
+          codex-home: ${{ runner.temp }}/codex-home
           sandbox: workspace-write
           safety-strategy: drop-sudo
           codex-version: 0.162.1
