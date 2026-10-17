@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { readFileSync, writeFileSync, existsSync, realpathSync, mkdirSync, rmSync, cpSync, readdirSync, lstatSync, unlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, openSync, closeSync, existsSync, realpathSync, mkdirSync, rmSync, cpSync, readdirSync, lstatSync, unlinkSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { dirname, join, resolve, sep } from 'node:path';
 import { captureEvidence, redactEvidenceText } from './evidence.mjs';
@@ -11,9 +11,15 @@ const COMMAND_OPERATIONS = ['setup', 'build', 'declared_test', 'server', 'browse
 export const ACCEPTANCE_OPERATIONS = ['build', 'declared_test', 'browser_smoke'];
 const BROWSER_ASSERTION_MAX_BYTES = 4096;
 const BROWSER_ASSERTION_KEYS = ['execution_id', 'ui_passed', 'version'];
+const EXPERIMENT_ASSERTION_MAX_BYTES = 16 * 1024;
+const EXPERIMENT_ASSERTION_KEYS = ['execution_id', 'falsification_passed', 'hypothesis_supported', 'negative_control_passed', 'observations', 'positive_control_passed', 'version'];
+const EXPERIMENT_NAME = /^[a-z][a-z0-9_-]{0,63}$/;
 
 export function requiredChecksForConfig(config) {
-  const configured = ACCEPTANCE_OPERATIONS.filter(operation => Boolean(config?.[operation]));
+  const configured = [
+    ...ACCEPTANCE_OPERATIONS.filter(operation => Boolean(config?.[operation])),
+    ...Object.keys(config?.experiment_specs ?? {}).map(name => `experiment_spec:${name}`),
+  ];
   if (configured.length === 0) throw new Error('Runner config must declare at least one acceptance check');
   if (config.required_checks === undefined) return { configured, required: configured };
   if (!Array.isArray(config.required_checks) || config.required_checks.length === 0) {
@@ -99,6 +105,31 @@ function validateBrowserAssertionConfig(assertion) {
   if (/^(?:[A-Za-z]:[\\/]|[\\/])/.test(assertion.path) || assertion.path.split(/[\\/]/).some(part => part === '..' || part === '')) throw new Error('Browser assertion path must be relative and traversal-free');
 }
 
+function validateExperimentAssertionConfig(assertion) {
+  if (!assertion || typeof assertion !== 'object' || Array.isArray(assertion)) throw new Error('Experiment assertion is required');
+  const keys = Object.keys(assertion).sort();
+  if (keys.length !== 1 || keys[0] !== 'path') throw new Error('Experiment assertion must contain only path');
+  if (typeof assertion.path !== 'string' || assertion.path.length === 0 || assertion.path.length > 260 || assertion.path.includes('\0')) throw new Error('Experiment assertion path is invalid');
+  if (/^(?:[A-Za-z]:[\\/]|[\\/])/.test(assertion.path) || assertion.path.split(/[\\/]/).some(part => part === '..' || part === '')) throw new Error('Experiment assertion path must be relative and traversal-free');
+}
+
+function validateExperimentSpecs(experimentSpecs) {
+  if (experimentSpecs === undefined) return [];
+  if (!experimentSpecs || typeof experimentSpecs !== 'object' || Array.isArray(experimentSpecs)) throw new Error('Runner experiment_specs must be an object');
+  const names = Object.keys(experimentSpecs);
+  if (names.length === 0 || names.length > 8) throw new Error('Runner experiment_specs must contain 1-8 named experiments');
+  for (const name of names) {
+    if (!EXPERIMENT_NAME.test(name)) throw new Error(`Runner experiment name is invalid: ${name}`);
+    const spec = experimentSpecs[name];
+    if (!spec || typeof spec !== 'object' || Array.isArray(spec)) throw new Error(`Runner experiment spec is invalid: ${name}`);
+    validateCommand(spec.command, `experiment_specs.${name}`);
+    runnerEnv(spec);
+    if (spec.cwd !== undefined && typeof spec.cwd !== 'string') throw new Error(`Runner cwd must be a string for experiment ${name}`);
+    validateExperimentAssertionConfig(spec.assertion);
+  }
+  return names;
+}
+
 function prepareBrowserAssertion(checkout, spec) {
   validateBrowserAssertionConfig(spec.assertion);
   if (!spec.assertion) return null;
@@ -116,6 +147,42 @@ function prepareBrowserAssertion(checkout, spec) {
     unlinkSync(absolutePath);
   }
   return { executionId: randomUUID(), relativePath, absolutePath };
+}
+
+function prepareExperimentAssertion(checkout, spec) {
+  validateExperimentAssertionConfig(spec.assertion);
+  const root = realpathSync(checkout);
+  const relativePath = spec.assertion.path.replaceAll('\\', '/');
+  const absolutePath = resolve(root, relativePath);
+  const parent = dirname(absolutePath);
+  mkdirSync(parent, { recursive: true });
+  const realParent = realpathSync(parent);
+  if (realParent !== root && !realParent.startsWith(`${root}${sep}`)) throw new Error('Experiment assertion path escapes checkout through a symlink');
+  if (existsSync(absolutePath)) {
+    const existing = lstatSync(absolutePath);
+    if (existing.isSymbolicLink()) throw new Error('Experiment assertion path must not be a symlink');
+    if (!existing.isFile()) throw new Error('Experiment assertion path must identify a regular file');
+    unlinkSync(absolutePath);
+  }
+  return { executionId: randomUUID(), relativePath, absolutePath };
+}
+
+function writeExperimentSpecification(checkout, specification, executionId) {
+  const root = realpathSync(checkout);
+  const specPath = resolve(root, '.controller', 'experiment-spec.json');
+  const specParent = dirname(specPath);
+  mkdirSync(specParent, { recursive: true });
+  const realParent = realpathSync(specParent);
+  if (realParent !== root && !realParent.startsWith(`${root}${sep}`)) throw new Error('Experiment specification path escapes checkout through a symlink');
+  const content = JSON.stringify({ version: 1, execution_id: executionId, ...specification }, null, 2);
+  let descriptor;
+  try {
+    descriptor = openSync(specPath, 'wx', 0o600);
+    writeFileSync(descriptor, content, { encoding: 'utf8' });
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+  return specPath;
 }
 
 function readBrowserAssertion(context) {
@@ -137,7 +204,36 @@ function readBrowserAssertion(context) {
   return { status: 'valid', executionId: value.execution_id, ui_passed: value.ui_passed, fileHash, bytes: content.byteLength };
 }
 
-function runCommand({ operation, spec, checkout, registry, timeoutMs, executionContext = null }) {
+function readExperimentAssertion(context) {
+  if (!context) return { status: 'not_configured', error: 'No controller-configured experiment assertion was provided.' };
+  if (!existsSync(context.absolutePath)) return { status: 'missing', error: 'Controller-configured experiment assertion was not produced.' };
+  const stat = lstatSync(context.absolutePath);
+  if (stat.isSymbolicLink() || !stat.isFile()) return { status: 'invalid', error: 'Controller-configured experiment assertion is not a regular file.' };
+  if (stat.size > EXPERIMENT_ASSERTION_MAX_BYTES) return { status: 'invalid', error: `Controller-configured experiment assertion exceeds ${EXPERIMENT_ASSERTION_MAX_BYTES} bytes.` };
+  const content = readFileSync(context.absolutePath);
+  const fileHash = sha256(content);
+  let value;
+  try { value = JSON.parse(content.toString('utf8')); } catch { return { status: 'invalid', error: 'Controller-configured experiment assertion is not valid JSON.', fileHash }; }
+  if (!value || typeof value !== 'object' || Array.isArray(value) || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(EXPERIMENT_ASSERTION_KEYS)) {
+    return { status: 'invalid', error: 'Controller-configured experiment assertion has an unexpected schema.', fileHash };
+  }
+  if (value.version !== 1 || value.execution_id !== context.executionId
+    || typeof value.hypothesis_supported !== 'boolean'
+    || typeof value.positive_control_passed !== 'boolean'
+    || typeof value.negative_control_passed !== 'boolean'
+    || typeof value.falsification_passed !== 'boolean'
+    || !value.observations || typeof value.observations !== 'object' || Array.isArray(value.observations)) {
+    return { status: 'invalid', error: 'Controller-configured experiment assertion has an invalid version, execution ID, control result or observations object.', fileHash };
+  }
+  return {
+    status: 'valid', executionId: value.execution_id, hypothesis_supported: value.hypothesis_supported,
+    positive_control_passed: value.positive_control_passed, negative_control_passed: value.negative_control_passed,
+    falsification_passed: value.falsification_passed, observations: value.observations,
+    fileHash, bytes: content.byteLength,
+  };
+}
+
+function runCommand({ operation, spec, checkout, registry, timeoutMs, executionContext = null, check = null }) {
   validateCommand(spec.command, operation);
   const cwd = resolveWorkingDirectory(checkout, spec.cwd ?? '.');
   const requestedCommand = spec.command.map(item => expand(item, checkout));
@@ -161,6 +257,9 @@ function runCommand({ operation, spec, checkout, registry, timeoutMs, executionC
   const assertion = operation === 'browser_smoke' && !launchFailed && !timedOut
     ? readBrowserAssertion(executionContext?.assertion ?? null)
     : null;
+  const experimentAssertion = operation === 'experiment_spec' && !launchFailed && !timedOut
+    ? readExperimentAssertion(executionContext?.experimentAssertion ?? null)
+    : null;
   let finalOutcome = timedOut ? 'timed_out' : launchFailed ? 'launch_failed' : exitCode === 0 ? 'passed' : 'failed';
   let finalObservation = launchFailed
     ? `Command failed to start: ${result.error?.code ?? 'unknown spawn error'}.`
@@ -180,8 +279,19 @@ function runCommand({ operation, spec, checkout, registry, timeoutMs, executionC
       finalObservation = 'Browser execution completed successfully, but the controller did not obtain a valid UI assertion, so application behavior is not verified.';
     }
   }
+  if (operation === 'experiment_spec' && !launchFailed && !timedOut) {
+    if (experimentAssertion?.status !== 'valid') {
+      if (exitCode === 0) {
+        finalOutcome = 'partial';
+        finalObservation = `Experiment execution completed successfully, but the controller did not obtain a valid experiment assertion: ${experimentAssertion?.error ?? 'unknown error'}`;
+      }
+    } else if (!experimentAssertion.positive_control_passed || !experimentAssertion.negative_control_passed || !experimentAssertion.falsification_passed) {
+      finalOutcome = 'failed';
+      finalObservation = 'Experiment assertion was captured, but one or more required controls or falsification checks failed.';
+    }
+  }
   const evidenceId = captureEvidence(registry, {
-    type: 'runner_execution', action: 'approved_runner', operation,
+    type: 'runner_execution', action: 'approved_runner', operation, ...(check ? { check } : {}),
     command: [executable, ...args].join(' '), requested_command: requestedCommand.join(' '),
     executable, launcher: invocation.launcher, arguments: args, launcher_arguments: invocation.args, cwd, working_directory: cwd,
     started_at: startedAt, duration_ms: Math.round(durationMs), started,
@@ -198,8 +308,25 @@ function runCommand({ operation, spec, checkout, registry, timeoutMs, executionC
       assertion_error: assertion.error ?? null,
       ui_passed: assertion.ui_passed,
     } : {}),
+    ...(experimentAssertion ? {
+      experiment_assertion_status: experimentAssertion.status,
+      experiment_assertion_execution_id: experimentAssertion.executionId ?? executionContext?.experimentAssertion?.executionId ?? null,
+      experiment_assertion_path: executionContext?.experimentAssertion?.relativePath ?? null,
+      experiment_assertion_hash: experimentAssertion.fileHash ?? null,
+      experiment_assertion_bytes: experimentAssertion.bytes ?? null,
+      experiment_assertion_error: experimentAssertion.error ?? null,
+      hypothesis_supported: experimentAssertion.hypothesis_supported,
+      positive_control_passed: experimentAssertion.positive_control_passed,
+      negative_control_passed: experimentAssertion.negative_control_passed,
+      falsification_passed: experimentAssertion.falsification_passed,
+      observations: experimentAssertion.observations,
+      experiment_controls_passed: experimentAssertion.status === 'valid'
+        && experimentAssertion.positive_control_passed
+        && experimentAssertion.negative_control_passed
+        && experimentAssertion.falsification_passed,
+    } : {}),
   });
-  return { evidence_id: evidenceId, outcome: finalOutcome, exit_code: exitCode, signal, started, duration_ms: Math.round(durationMs), stdout, stderr, executable, arguments: args, cwd, ui_passed: assertion?.ui_passed };
+  return { evidence_id: evidenceId, outcome: finalOutcome, exit_code: exitCode, signal, started, duration_ms: Math.round(durationMs), stdout, stderr, executable, arguments: args, cwd, ui_passed: assertion?.ui_passed, experiment_assertion: experimentAssertion };
 }
 
 function terminateProcessTree(child) {
@@ -464,6 +591,7 @@ function validateConfig(config) {
       if (typeof spec.server.ready_url !== 'string' || !/^https?:\/\//i.test(spec.server.ready_url)) throw new Error('Browser server requires an http(s) ready_url');
     }
   }
+  validateExperimentSpecs(config.experiment_specs);
   return config;
 }
 
@@ -476,7 +604,41 @@ export function loadRunnerConfig(path) {
 export function createApprovedRunner({ config, registry, scratch, timeoutMs = 120000 }) {
   validateConfig(config);
   let setupResult = null;
-  return ({ operation, checkout, patch }) => {
+  return ({ operation, checkout, patch, experiment, specification }) => {
+    if (operation === 'experiment_spec') {
+      const spec = config.experiment_specs?.[experiment];
+      if (!spec) {
+        const evidenceId = captureEvidence(registry, {
+          type: 'runner_execution', action: 'approved_runner', operation,
+          experiment, outcome: 'not_available', execution_verified: false,
+          observation: `No controller-configured experiment named ${experiment} is available.`,
+        });
+        return { evidence_id: evidenceId, outcome: 'not_available', exit_code: null };
+      }
+      let assertion;
+      try {
+        assertion = prepareExperimentAssertion(checkout, spec);
+        const specPath = writeExperimentSpecification(checkout, specification, assertion.executionId);
+      } catch (error) {
+        const evidenceId = captureEvidence(registry, {
+          type: 'runner_execution', action: 'approved_runner', operation,
+          experiment, outcome: 'not_available', execution_verified: false,
+          observation: `Experiment was not started because the controller could not prepare its bounded input or assertion: ${error.message}`,
+        });
+        return { evidence_id: evidenceId, outcome: 'not_available', exit_code: null };
+      }
+      return runCommand({
+        operation, check: `experiment_spec:${experiment}`, spec, checkout, registry, timeoutMs,
+        executionContext: {
+          experimentAssertion: assertion,
+          env: {
+            TAKAVEN_EXPERIMENT_SPEC_PATH: resolve(checkout, '.controller', 'experiment-spec.json'),
+            TAKAVEN_EXPERIMENT_EXECUTION_ID: assertion.executionId,
+            TAKAVEN_EXPERIMENT_ASSERTION_PATH: assertion.absolutePath,
+          },
+        },
+      });
+    }
     if (operation === 'correction_verification') {
       const evidenceId = captureEvidence(registry, {
         type: 'controller_validation',

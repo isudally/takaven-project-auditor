@@ -10,8 +10,12 @@ export const MAX_RETRIEVAL_BYTES = 128 * 1024;
 // Correction execution is intentionally outside the active auditor protocol.
 // TAKAVEN may recommend a patch as report data, but a separate implementation
 // workflow owns applying and verifying changes.
-const REQUEST_TYPES = new Set(['source_search', 'source_read', 'runtime_evidence', 'experiment']);
+const REQUEST_TYPES = new Set(['source_search', 'source_read', 'runtime_evidence', 'experiment', 'experiment_spec']);
 const EXPERIMENTS = new Set(['build', 'declared_test', 'browser_smoke']);
+const EXPERIMENT_NAME = /^[a-z][a-z0-9_-]{0,63}$/;
+const EXPERIMENT_SPEC_KEYS = new Set(['type', 'query', 'paths', 'evidence_ids', 'experiment', 'reason', 'patch', 'continuation', 'ranges', 'hypothesis', 'invariant', 'parameters', 'positive_control', 'negative_control', 'required_observations', 'falsification_conditions']);
+const FORBIDDEN_EXPERIMENT_PARAMETER_KEYS = new Set(['args', 'arguments', 'command', 'commands', 'cwd', 'env', 'executable', 'path', 'script', 'shell']);
+const MAX_EXPERIMENT_SPEC_BYTES = 16 * 1024;
 const SKIP_DIRS = new Set(['.git', 'node_modules', 'dist', 'build', 'coverage', '.next']);
 const SENSITIVE = /^(?:\.env(?:\..*)?|.*\.(?:pem|key|p12|pfx|sqlite|db))$/i;
 
@@ -42,6 +46,58 @@ function safeQuery(value) {
   return value;
 }
 
+function validateBoundedValue(value, label, depth = 0) {
+  if (depth > 3) throw new Error(`${label} is too deeply nested`);
+  if (value === null || typeof value === 'boolean') return;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new Error(`${label} must contain finite numbers`);
+    return;
+  }
+  if (typeof value === 'string') {
+    if (value.length > 500) throw new Error(`${label} contains an oversized string`);
+    return;
+  }
+  if (Array.isArray(value)) {
+    if (value.length > 16) throw new Error(`${label} contains too many items`);
+    value.forEach((item, index) => validateBoundedValue(item, `${label}[${index}]`, depth + 1));
+    return;
+  }
+  if (typeof value === 'object') {
+    const keys = Object.keys(value);
+    if (keys.length > 32) throw new Error(`${label} contains too many fields`);
+    for (const key of keys) {
+      if (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(key)) throw new Error(`${label} contains an invalid field name`);
+      if (FORBIDDEN_EXPERIMENT_PARAMETER_KEYS.has(key.toLowerCase())) throw new Error(`${label}.${key} is not permitted in an experiment parameter`);
+      validateBoundedValue(value[key], `${label}.${key}`, depth + 1);
+    }
+    return;
+  }
+  throw new Error(`${label} contains an unsupported value`);
+}
+
+function requiredExperimentText(value, label) {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 2000) throw new Error(`${label} must be a non-empty bounded string`);
+}
+
+function validateExperimentSpecification(request) {
+  if (typeof request.experiment !== 'string' || !EXPERIMENT_NAME.test(request.experiment)) throw new Error('Experiment specification name is invalid');
+  requiredExperimentText(request.hypothesis, 'Experiment hypothesis');
+  requiredExperimentText(request.invariant, 'Experiment invariant');
+  requiredExperimentText(request.positive_control, 'Experiment positive control');
+  requiredExperimentText(request.negative_control, 'Experiment negative control');
+  if (!request.parameters || typeof request.parameters !== 'object' || Array.isArray(request.parameters)) throw new Error('Experiment parameters must be an object');
+  validateBoundedValue(request.parameters, 'Experiment parameters');
+  if (!Array.isArray(request.required_observations) || request.required_observations.length === 0 || request.required_observations.length > 8) throw new Error('Experiment required_observations must contain 1-8 items');
+  if (!Array.isArray(request.falsification_conditions) || request.falsification_conditions.length === 0 || request.falsification_conditions.length > 8) throw new Error('Experiment falsification_conditions must contain 1-8 items');
+  request.required_observations.forEach((value, index) => requiredExperimentText(value, `Experiment required_observations[${index}]`));
+  request.falsification_conditions.forEach((value, index) => requiredExperimentText(value, `Experiment falsification_conditions[${index}]`));
+  if (Buffer.byteLength(JSON.stringify({
+    hypothesis: request.hypothesis, invariant: request.invariant, experiment: request.experiment,
+    parameters: request.parameters, positive_control: request.positive_control, negative_control: request.negative_control,
+    required_observations: request.required_observations, falsification_conditions: request.falsification_conditions,
+  }), 'utf8') > MAX_EXPERIMENT_SPEC_BYTES) throw new Error(`Experiment specification exceeds ${MAX_EXPERIMENT_SPEC_BYTES} bytes`);
+}
+
 export function validateInvestigationResponse(value, registry) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid investigation response');
   const allowed = new Set(['action', 'rationale', 'requests']);
@@ -53,8 +109,7 @@ export function validateInvestigationResponse(value, registry) {
   if (value.action === 'final' && value.requests.length !== 0) throw new Error('Final investigation response cannot contain requests');
   for (const [index, request] of value.requests.entries()) {
     if (!request || typeof request !== 'object' || Array.isArray(request)) throw new Error(`Invalid investigation request ${index}`);
-    const requestKeys = new Set(['type', 'query', 'paths', 'evidence_ids', 'experiment', 'reason', 'patch', 'continuation', 'ranges']);
-    for (const key of Object.keys(request)) if (!requestKeys.has(key)) throw new Error(`Unexpected investigation request field: ${key}`);
+    for (const key of Object.keys(request)) if (!EXPERIMENT_SPEC_KEYS.has(key)) throw new Error(`Unexpected investigation request field: ${key}`);
     if (!REQUEST_TYPES.has(request.type)) throw new Error(`Unsupported investigation request type: ${request.type}`);
     if (request.reason !== undefined && request.reason !== null && (typeof request.reason !== 'string' || request.reason.length > 1000)) throw new Error(`Invalid request reason ${index}`);
     if (request.type === 'source_search') safeQuery(request.query);
@@ -71,6 +126,7 @@ export function validateInvestigationResponse(value, registry) {
     if (request.type === 'source_search' && request.continuation !== undefined && request.continuation !== null && (!Number.isInteger(request.continuation) || request.continuation < 0)) throw new Error('Invalid source_search continuation');
     if (request.type === 'runtime_evidence' && request.evidence_ids !== undefined && request.evidence_ids !== null) validateEvidenceIds(request.evidence_ids, registry, `requests[${index}].evidence_ids`);
     if (request.type === 'experiment' && !EXPERIMENTS.has(request.experiment)) throw new Error(`Experiment is not pre-approved: ${request.experiment}`);
+    if (request.type === 'experiment_spec') validateExperimentSpecification(request);
   }
   return value;
 }
@@ -221,6 +277,26 @@ export function processInvestigationRequests({ requests, checkout, registry, ret
       }
       searchCoverage.push({ query, continuation: request.continuation ?? 0, examined_files: inventory.examined, truncated: inventory.truncated, next_continuation: inventory.nextOffset, omitted_large_files: [...omittedLargeFiles] });
       results.push({ type: request.type, query, matches, examined_files: inventory.examined, truncated: inventory.truncated, next_continuation: inventory.nextOffset, omitted_large_files: [...omittedLargeFiles] });
+      continue;
+    }
+    if (request.type === 'experiment_spec') {
+      const specification = {
+        hypothesis: request.hypothesis,
+        invariant: request.invariant,
+        experiment: request.experiment,
+        parameters: request.parameters,
+        positive_control: request.positive_control,
+        negative_control: request.negative_control,
+        required_observations: request.required_observations,
+        falsification_conditions: request.falsification_conditions,
+      };
+      if (typeof runner !== 'function') {
+        const evidenceId = captureEvidence(registry, { type: 'experiment', action: 'bounded_experiment_specification', experiment: request.experiment, specification, outcome: 'not_available', execution_verified: false, observation: 'No approved runner was provided; the controller did not execute the proposed experiment.' });
+        results.push({ type: request.type, experiment: request.experiment, evidence_id: evidenceId, outcome: 'not_available' });
+      } else {
+        const execution = runner({ operation: 'experiment_spec', experiment: request.experiment, specification, checkout, registry });
+        results.push({ type: request.type, experiment: request.experiment, ...execution });
+      }
       continue;
     }
     if (request.type === 'experiment') {

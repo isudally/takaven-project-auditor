@@ -112,6 +112,7 @@ export function deriveRuntimeEvidenceStatus(record) {
   }
 
   if (record.outcome === 'failed') {
+    if (record.operation === 'experiment_spec' && record.experiment_assertion_status === 'valid' && record.experiment_controls_passed === false && exitSucceeded && !timedOut && !hasLaunchFailure) return 'FAIL';
     if (uiFailed && !timedOut && !hasLaunchFailure) return 'FAIL';
     if (exitSucceeded || uiSucceeded || timedOut) return null;
     return 'FAIL';

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -26,6 +26,92 @@ test('approved runner captures independent command evidence', () => {
     assert.equal(isEligibleRuntimeEvidence(registry, result.evidence_id, { status: 'PASS', commit: 'abc' }), true);
     assert.match(registry.records[0].stdout, /ok/);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('bounded experiment specs pass only with controller-valid controls', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'takaven-runner-experiment-'));
+  try {
+    const script = join(scratch, 'experiment.mjs');
+    writeFileSync(script, `import { readFileSync, writeFileSync } from 'node:fs';
+const specification = JSON.parse(readFileSync(process.env.TAKAVEN_EXPERIMENT_SPEC_PATH, 'utf8'));
+writeFileSync(process.env.TAKAVEN_EXPERIMENT_ASSERTION_PATH, JSON.stringify({
+  version: 1,
+  execution_id: process.env.TAKAVEN_EXPERIMENT_EXECUTION_ID,
+  hypothesis_supported: specification.parameters.first === 'A',
+  positive_control_passed: true,
+  negative_control_passed: process.env.FAIL_CONTROL !== 'true',
+  falsification_passed: process.env.FAIL_CONTROL !== 'true',
+  observations: { parameters: specification.parameters },
+}));
+`);
+    const specification = {
+      hypothesis: 'A record identity can be mixed.',
+      invariant: 'Returned identity matches requested identity.',
+      parameters: { first: 'A', second: 'B' },
+      positive_control: 'A is accepted.',
+      negative_control: 'B is rejected.',
+      required_observations: ['returned identity'],
+      falsification_conditions: ['Both controls pass.'],
+    };
+    const config = {
+      version: 1,
+      experiment_specs: {
+        identity_probe: { command: ['node', script], assertion: { path: '.controller/experiment-result.json' } },
+      },
+    };
+    const registry = createEvidenceRegistry({ source: 'fixture', commit: 'abc', requiredChecks: ['experiment_spec:identity_probe'] });
+    const runner = createApprovedRunner({ config, registry, scratch, timeoutMs: 5000 });
+    const passed = runner({ operation: 'experiment_spec', experiment: 'identity_probe', specification, checkout: scratch });
+    assert.equal(passed.outcome, 'passed', JSON.stringify(registry.records, null, 2));
+    assert.equal(registry.records[0].check, 'experiment_spec:identity_probe');
+    assert.equal(registry.records[0].positive_control_passed, true);
+    assert.equal(registry.records[0].negative_control_passed, true);
+    assert.equal(isEligibleRuntimeEvidence(registry, passed.evidence_id, { status: 'PASS', commit: 'abc' }), true);
+
+    const failedScratch = mkdtempSync(join(tmpdir(), 'takaven-runner-experiment-failed-'));
+    try {
+      const failedRegistry = createEvidenceRegistry({ source: 'fixture', commit: 'abc', requiredChecks: ['experiment_spec:identity_probe'] });
+      const failedRunner = createApprovedRunner({
+        config: { ...config, experiment_specs: { identity_probe: { ...config.experiment_specs.identity_probe, env: { FAIL_CONTROL: 'true' } } } },
+        registry: failedRegistry, failedScratch, timeoutMs: 5000,
+      });
+      const failed = failedRunner({ operation: 'experiment_spec', experiment: 'identity_probe', specification, checkout: failedScratch });
+      assert.equal(failed.outcome, 'failed');
+      assert.equal(failedRegistry.records[0].experiment_controls_passed, false);
+      assert.equal(isEligibleRuntimeEvidence(failedRegistry, failed.evidence_id, { status: 'FAIL', commit: 'abc' }), true);
+    } finally { rmSync(failedScratch, { recursive: true, force: true }); }
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('runner rejects unconfigured or unsafe bounded experiment definitions', () => {
+  const registry = createEvidenceRegistry({ source: 'fixture', commit: 'abc' });
+  assert.throws(() => createApprovedRunner({ config: { version: 1, experiment_specs: { 'bad name': { command: ['node', '-e', 'true'], assertion: { path: 'result.json' } } } }, registry, scratch: tmpdir() }), /invalid/);
+  assert.throws(() => createApprovedRunner({ config: { version: 1, experiment_specs: { probe: { command: ['sh', '-c', 'true'], assertion: { path: 'result.json' } } } }, registry, scratch: tmpdir() }), /not approved/);
+  assert.throws(() => createApprovedRunner({ config: { version: 1, experiment_specs: { probe: { command: ['node', '-e', 'true'], assertion: { path: '../result.json' } } } }, registry, scratch: tmpdir() }), /relative and traversal-free/);
+});
+
+test('experiment specification publication cannot follow an existing symlink', { skip: process.platform === 'win32' }, () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'takaven-runner-experiment-symlink-'));
+  const external = join(tmpdir(), `takaven-experiment-external-${Date.now()}.json`);
+  try {
+    mkdirSync(join(scratch, '.controller'));
+    writeFileSync(external, 'protected');
+    symlinkSync(external, join(scratch, '.controller', 'experiment-spec.json'));
+    const registry = createEvidenceRegistry({ source: 'fixture', commit: 'abc', requiredChecks: ['experiment_spec:identity_probe'] });
+    const runner = createApprovedRunner({
+      config: { version: 1, experiment_specs: { identity_probe: { command: ['node', '-e', 'process.exit(0)'], assertion: { path: '.controller/experiment-result.json' } } } },
+      registry, scratch, timeoutMs: 5000,
+    });
+    const result = runner({ operation: 'experiment_spec', experiment: 'identity_probe', specification: {
+      hypothesis: 'x', invariant: 'y', parameters: { value: 1 }, positive_control: 'x', negative_control: 'y',
+      required_observations: ['x'], falsification_conditions: ['y'],
+    }, checkout: scratch });
+    assert.equal(result.outcome, 'not_available');
+    assert.equal(readFileSync(external, 'utf8'), 'protected');
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+    rmSync(external, { force: true });
+  }
 });
 
 test('runner derives acceptance checks without treating setup as an acceptance check', () => {
