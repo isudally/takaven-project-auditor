@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { readFileSync, writeFileSync, existsSync, realpathSync, mkdirSync, rmSync, cpSync, readdirSync, lstatSync, unlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, openSync, closeSync, existsSync, realpathSync, mkdirSync, rmSync, cpSync, readdirSync, lstatSync, unlinkSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { dirname, join, resolve, sep } from 'node:path';
 import { captureEvidence, redactEvidenceText } from './evidence.mjs';
@@ -165,6 +165,24 @@ function prepareExperimentAssertion(checkout, spec) {
     unlinkSync(absolutePath);
   }
   return { executionId: randomUUID(), relativePath, absolutePath };
+}
+
+function writeExperimentSpecification(checkout, specification, executionId) {
+  const root = realpathSync(checkout);
+  const specPath = resolve(root, '.controller', 'experiment-spec.json');
+  const specParent = dirname(specPath);
+  mkdirSync(specParent, { recursive: true });
+  const realParent = realpathSync(specParent);
+  if (realParent !== root && !realParent.startsWith(`${root}${sep}`)) throw new Error('Experiment specification path escapes checkout through a symlink');
+  const content = JSON.stringify({ version: 1, execution_id: executionId, ...specification }, null, 2);
+  let descriptor;
+  try {
+    descriptor = openSync(specPath, 'wx', 0o600);
+    writeFileSync(descriptor, content, { encoding: 'utf8' });
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+  return specPath;
 }
 
 function readBrowserAssertion(context) {
@@ -600,13 +618,7 @@ export function createApprovedRunner({ config, registry, scratch, timeoutMs = 12
       let assertion;
       try {
         assertion = prepareExperimentAssertion(checkout, spec);
-        const specPath = resolve(checkout, '.controller', 'experiment-spec.json');
-        const specParent = dirname(specPath);
-        mkdirSync(specParent, { recursive: true });
-        const realParent = realpathSync(specParent);
-        const root = realpathSync(checkout);
-        if (realParent !== root && !realParent.startsWith(`${root}${sep}`)) throw new Error('Experiment specification path escapes checkout through a symlink');
-        writeFileSync(specPath, JSON.stringify({ version: 1, execution_id: assertion.executionId, ...specification }, null, 2), { encoding: 'utf8', mode: 0o600 });
+        const specPath = writeExperimentSpecification(checkout, specification, assertion.executionId);
       } catch (error) {
         const evidenceId = captureEvidence(registry, {
           type: 'runner_execution', action: 'approved_runner', operation,
