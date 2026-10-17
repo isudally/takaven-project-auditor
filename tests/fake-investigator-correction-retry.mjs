@@ -10,7 +10,7 @@ const ids = [...prompt.matchAll(/ev-[a-f0-9]{16}/g)].map(match => match[0]);
 if (schema.endsWith('investigation-request.schema.json')) {
   const round = Number((output.match(/investigation-(\d+)/) ?? [])[1] ?? 0);
   if (round === 1) {
-    writeFileSync(output, JSON.stringify({ action: 'request', rationale: 'Run the approved build check first.', requests: [{ type: 'experiment', query: null, paths: null, evidence_ids: null, experiment: 'build', reason: 'Need the build result.', patch: null, continuation: null, ranges: null }] }));
+    writeFileSync(output, JSON.stringify({ action: 'request', rationale: 'Run the approved build check first.', requests: [{ type: 'experiment', query: null, paths: null, evidence_ids: null, experiment: 'build', reason: 'Need the build result.', continuation: null, ranges: null }] }));
   } else if (round === 2) {
     writeFileSync(output, JSON.stringify({ action: 'request', rationale: 'Verify the proposed correction.', requests: [{ type: 'correction_verification', query: null, paths: null, evidence_ids: null, experiment: null, reason: 'Apply the correction.', patch: '--- a/app.mjs\n+++ b/app.mjs\n@@\n-old\n+new', continuation: null, ranges: null }] }));
   } else if (round === 3 && prompt.includes('controller rejected the proposed correction')) {

@@ -92,6 +92,15 @@ test('rejects malformed nested evidence while preserving static findings',()=>{
   const staticReport={...sample,runtime_status:'NOT RUN',runtime_evidence:[],findings:[{...sample.findings[0],evidence_type:'OBSERVED'}]};
   assert.equal(validateReport(staticReport,{mode:'inspect'}).findings[0].evidence_type,'OBSERVED');
 });
+test('allowed-key validation has explicit required and optional fields',()=>{
+  const runtime = { check: 'build', status: 'NOT RUN', command: 'npm test', observation: 'not executed', negative_control: 'not required' };
+  const notRun = {...sample, runtime_status:'NOT RUN', runtime_evidence:[runtime]};
+  assert.equal(validateReport(notRun).runtime_evidence[0].check, 'build');
+  assert.throws(()=>validateReport({...notRun, runtime_evidence:[{...runtime, observation:undefined}]}),/runtime_evidence\[0\]\.observation/);
+  assert.throws(()=>validateReport({...notRun, runtime_evidence:[{...runtime, unexpected:'x'}]}),/Unexpected field runtime_evidence\[0\]\.unexpected/);
+  const reordered = { negative_control: runtime.negative_control, observation: runtime.observation, command: runtime.command, status: runtime.status, check: runtime.check };
+  assert.equal(validateReport({...notRun, runtime_evidence:[reordered]}).runtime_evidence[0].command, 'npm test');
+});
 test('investigation mode requires controller-owned evidence IDs',()=>{
   const registry = createEvidenceRegistry({source:'fixture',commit:'abc'});
   const evidenceId = captureEvidence(registry,{type:'source',location:'src/app.js',content_hash:'sha256:test',content:'throw new Error()',outcome:'retrieved'});

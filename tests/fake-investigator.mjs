@@ -9,7 +9,7 @@ const ids = [...prompt.matchAll(/ev-[a-f0-9]{16}/g)].map(match => match[0]);
 if (schema.endsWith('investigation-request.schema.json')) {
   const round = output.includes('investigation-1') ? 'request' : 'final';
   writeFileSync(output, JSON.stringify(round === 'request'
-    ? { action: 'request', rationale: 'The entry point needs direct confirmation.', requests: [{ type: 'source_read', query: null, paths: ['app.mjs'], evidence_ids: null, experiment: null, reason: null, patch: null, continuation: null, ranges: null }] }
+    ? { action: 'request', rationale: 'The entry point needs direct confirmation.', requests: [{ type: 'source_read', query: null, paths: ['app.mjs'], evidence_ids: null, experiment: null, reason: null, continuation: null, ranges: null }] }
     : { action: 'final', rationale: 'The bounded source evidence is sufficient.', requests: [] }));
 } else {
   if (ids.length === 0) throw new Error('No controller evidence ID was supplied');
