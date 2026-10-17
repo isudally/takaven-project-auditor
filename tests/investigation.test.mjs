@@ -13,6 +13,19 @@ test('validates bounded investigation requests and rejects unsafe controls', () 
   assert.doesNotThrow(() => validateInvestigationResponse({ action: 'request', rationale: 'No further evidence needed', requests: [] }, registry));
   assert.doesNotThrow(() => validateInvestigationResponse({ action: 'request', rationale: 'Need the captured failure', requests: [{ type: 'runtime_evidence', evidence_ids: [id] }] }, registry));
   assert.doesNotThrow(() => validateInvestigationResponse({ action: 'request', rationale: 'Need the captured runtime bundle', requests: [{ type: 'runtime_evidence', evidence_ids: null }] }, registry));
+  assert.doesNotThrow(() => validateInvestigationResponse({ action: 'request', rationale: 'Challenge the invariant with controller-owned controls', requests: [{
+    type: 'experiment_spec', experiment: 'identity_probe', hypothesis: 'A reused identity can mix two records.', invariant: 'The returned record must match the requested identity.',
+    parameters: { first: 'A', second: 'B' }, positive_control: 'Matching identity returns the matching record.', negative_control: 'Mismatched identity is rejected.',
+    required_observations: ['returned identity', 'stored identity'], falsification_conditions: ['Both controls pass and no mismatch is observed.'],
+  }] }, registry));
+  assert.throws(() => validateInvestigationResponse({ action: 'request', rationale: 'unsafe experiment', requests: [{
+    type: 'experiment_spec', experiment: 'identity_probe', hypothesis: 'x', invariant: 'y', parameters: { command: 'node -e unsafe' },
+    positive_control: 'x', negative_control: 'y', required_observations: ['x'], falsification_conditions: ['y'], command: ['node', '-e', 'unsafe'],
+  }] }, registry), /Unexpected investigation request field/);
+  assert.throws(() => validateInvestigationResponse({ action: 'request', rationale: 'unsafe parameter', requests: [{
+    type: 'experiment_spec', experiment: 'identity_probe', hypothesis: 'x', invariant: 'y', parameters: { executable: 'node' },
+    positive_control: 'x', negative_control: 'y', required_observations: ['x'], falsification_conditions: ['y'],
+  }] }, registry), /not permitted/);
   assert.throws(() => validateInvestigationResponse({ action: 'request', rationale: 'escape', requests: [{ type: 'source_read', paths: ['../../secret'] }] }, registry), /not allowed/);
   assert.throws(() => validateInvestigationResponse({ action: 'request', rationale: 'arbitrary', requests: [{ type: 'experiment', experiment: 'shell' }] }, registry), /pre-approved/);
   assert.throws(() => validateInvestigationResponse({ action: 'request', rationale: 'forge', requests: [{ type: 'runtime_evidence', evidence_ids: ['ev-0000000000000000'] }] }, registry), /unknown evidence ID/);
@@ -67,6 +80,29 @@ test('controller rejects correction verification without invoking the runner', (
     assert.equal(result.results[0].evidence_id.startsWith('ev-'), true);
     assert.equal(registry.records.some(record => record.type === 'controller_validation' && record.action === 'policy_gate' && record.outcome === 'rejected'), true);
     assert.equal(registry.records.some(record => record.operation === 'correction_verification'), false);
+  } finally { rmSync(checkout, { recursive: true, force: true }); }
+});
+
+test('controller executes only the configured experiment for a bounded specification', () => {
+  const checkout = mkdtempSync(join(tmpdir(), 'takaven-investigation-experiment-'));
+  try {
+    writeFileSync(join(checkout, 'app.mjs'), 'export const value = 1;\n');
+    const registry = createEvidenceRegistry({ source: 'fixture', commit: 'abc', requiredChecks: ['experiment_spec:identity_probe'] });
+    let received;
+    const result = processInvestigationRequests({
+      checkout, registry,
+      requests: [{
+        type: 'experiment_spec', experiment: 'identity_probe', hypothesis: 'The identity can be mixed.', invariant: 'Returned identity matches requested identity.',
+        parameters: { first: 'A', second: 'B' }, positive_control: 'A is accepted.', negative_control: 'B is rejected.',
+        required_observations: ['returned identity'], falsification_conditions: ['Both controls pass.'],
+      }],
+      runner: input => { received = input; return { evidence_id: 'ev-1111111111111111', outcome: 'passed', exit_code: 0 }; },
+    });
+    assert.equal(result.results[0].outcome, 'passed');
+    assert.equal(received.operation, 'experiment_spec');
+    assert.equal(received.experiment, 'identity_probe');
+    assert.equal(received.specification.parameters.first, 'A');
+    assert.equal(received.specification.command, undefined);
   } finally { rmSync(checkout, { recursive: true, force: true }); }
 });
 

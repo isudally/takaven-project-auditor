@@ -28,6 +28,65 @@ test('approved runner captures independent command evidence', () => {
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
+test('bounded experiment specs pass only with controller-valid controls', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'takaven-runner-experiment-'));
+  try {
+    const script = join(scratch, 'experiment.mjs');
+    writeFileSync(script, `import { readFileSync, writeFileSync } from 'node:fs';
+const specification = JSON.parse(readFileSync(process.env.TAKAVEN_EXPERIMENT_SPEC_PATH, 'utf8'));
+writeFileSync(process.env.TAKAVEN_EXPERIMENT_ASSERTION_PATH, JSON.stringify({
+  version: 1,
+  execution_id: process.env.TAKAVEN_EXPERIMENT_EXECUTION_ID,
+  hypothesis_supported: specification.parameters.first === 'A',
+  positive_control_passed: true,
+  negative_control_passed: process.env.FAIL_CONTROL !== 'true',
+  falsification_passed: process.env.FAIL_CONTROL !== 'true',
+  observations: { parameters: specification.parameters },
+}));
+`);
+    const specification = {
+      hypothesis: 'A record identity can be mixed.',
+      invariant: 'Returned identity matches requested identity.',
+      parameters: { first: 'A', second: 'B' },
+      positive_control: 'A is accepted.',
+      negative_control: 'B is rejected.',
+      required_observations: ['returned identity'],
+      falsification_conditions: ['Both controls pass.'],
+    };
+    const config = {
+      version: 1,
+      experiment_specs: {
+        identity_probe: { command: ['node', script], assertion: { path: '.controller/experiment-result.json' } },
+      },
+    };
+    const registry = createEvidenceRegistry({ source: 'fixture', commit: 'abc', requiredChecks: ['experiment_spec:identity_probe'] });
+    const runner = createApprovedRunner({ config, registry, scratch, timeoutMs: 5000 });
+    const passed = runner({ operation: 'experiment_spec', experiment: 'identity_probe', specification, checkout: scratch });
+    assert.equal(passed.outcome, 'passed', JSON.stringify(registry.records, null, 2));
+    assert.equal(registry.records[0].check, 'experiment_spec:identity_probe');
+    assert.equal(registry.records[0].positive_control_passed, true);
+    assert.equal(registry.records[0].negative_control_passed, true);
+    assert.equal(isEligibleRuntimeEvidence(registry, passed.evidence_id, { status: 'PASS', commit: 'abc' }), true);
+
+    const failedRegistry = createEvidenceRegistry({ source: 'fixture', commit: 'abc', requiredChecks: ['experiment_spec:identity_probe'] });
+    const failedRunner = createApprovedRunner({
+      config: { ...config, experiment_specs: { identity_probe: { ...config.experiment_specs.identity_probe, env: { FAIL_CONTROL: 'true' } } } },
+      registry: failedRegistry, scratch, timeoutMs: 5000,
+    });
+    const failed = failedRunner({ operation: 'experiment_spec', experiment: 'identity_probe', specification, checkout: scratch });
+    assert.equal(failed.outcome, 'failed');
+    assert.equal(failedRegistry.records[0].experiment_controls_passed, false);
+    assert.equal(isEligibleRuntimeEvidence(failedRegistry, failed.evidence_id, { status: 'FAIL', commit: 'abc' }), true);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('runner rejects unconfigured or unsafe bounded experiment definitions', () => {
+  const registry = createEvidenceRegistry({ source: 'fixture', commit: 'abc' });
+  assert.throws(() => createApprovedRunner({ config: { version: 1, experiment_specs: { 'bad name': { command: ['node', '-e', 'true'], assertion: { path: 'result.json' } } } }, registry, scratch: tmpdir() }), /invalid/);
+  assert.throws(() => createApprovedRunner({ config: { version: 1, experiment_specs: { probe: { command: ['sh', '-c', 'true'], assertion: { path: 'result.json' } } } }, registry, scratch: tmpdir() }), /not approved/);
+  assert.throws(() => createApprovedRunner({ config: { version: 1, experiment_specs: { probe: { command: ['node', '-e', 'true'], assertion: { path: '../result.json' } } } }, registry, scratch: tmpdir() }), /relative and traversal-free/);
+});
+
 test('runner derives acceptance checks without treating setup as an acceptance check', () => {
   assert.deepEqual(requiredChecksForConfig({ version: 1, setup: { command: ['node', '-e', 'true'] }, build: { command: ['node', '-e', 'true'] }, declared_test: { command: ['node', '-e', 'true'] } }), {
     configured: ['build', 'declared_test'],
