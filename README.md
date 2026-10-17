@@ -1,6 +1,6 @@
 # TAKAVEN Project Auditor — v0.1
 
-**Purpose:** Independently audit software projects for runnable functionality, missing implementations, engineering/security risks and commercial usefulness. This is a reusable auditor, not part of Playkin and not a development or deployment agent.
+**Purpose:** TAKAVEN Project Auditor is a personal internal tool for independently challenging software and AI projects built with coding agents. It is not currently a SaaS product, agency package, DevSecOps platform or generic multi-agent service.
 
 ## What exists in v0.1
 
@@ -19,15 +19,25 @@
 
 ### Work package 1 status
 
-The controller now performs strict structural and semantic report validation, rejects unsupported runtime success claims, writes controller-owned project/commit/mode metadata, uses a sanitized Codex environment, applies a hard Codex timeout, cleans up process trees and scratch workspaces, and supports a Windows committed-snapshot fallback when local Git clone transport is blocked by the host.
+The controller now performs strict structural and semantic report validation, rejects unsupported runtime success claims, writes controller-owned project/commit/mode metadata, uses a sanitized Codex environment, applies a hard Codex timeout, cleans up process trees and scratch workspaces, and supports a Windows committed-snapshot fallback when local Git clone transport is blocked by the host. If a final report fails semantic validation, the controller preserves the failed attempt, returns the exact validation error to Codex and permits exactly one complete replacement report; it never repairs the report or weakens the contract.
 
-The model response schema intentionally contains only model-owned fields. Trusted identity, execution metadata and inspection coverage are added by the controller after validation and cannot be supplied by the model. Local audits warn when uncommitted changes are excluded because only the committed snapshot is audited.
+The model response schema intentionally contains only model-owned fields. Trusted identity, execution metadata and inspection coverage are added by the controller after validation and cannot be supplied by the model. Evidence IDs and provenance are controller-validated; semantic relevance remains an evidence-backed model judgment, not a claim that the controller understands every finding. Local audits warn when uncommitted changes are excluded because only the committed snapshot is audited.
 
-Investigative mode also supports a bounded `experiment_spec` request. The model may submit a hypothesis, invariant, bounded JSON parameters, positive and negative controls, required observations and falsification conditions. The controller executes only a matching operator-configured `experiment_specs` entry, passes the proposal through a controller-created input file, and requires a fresh controller-configured assertion containing both controls and observations. A control passes when it executes and produces its declared diagnostic result; a negative control may therefore pass by exposing the forbidden behavior under test. The model cannot provide commands, executables, paths, environment variables or shell settings; missing or invalid assertions are never treated as a PASS.
+Investigative mode also supports a bounded `experiment_spec` request. The model may submit a hypothesis, invariant, bounded JSON parameters, positive and negative controls, required observations and falsification conditions. The controller executes only a matching operator-configured `experiment_specs` entry, passes the proposal through a controller-created input file, and requires a fresh controller-configured assertion containing both controls and observations. A control passes when it executes and produces its declared diagnostic result; a negative control may therefore pass by exposing the forbidden behavior under test. The model cannot provide commands, executables, paths, environment variables or shell settings; missing or invalid assertions are never treated as a PASS. The `audit_loop_risk` field is non-UNKNOWN only when the controller has validated the relevant prior history; it is not automatic loop detection from a single report.
 
 New reports also require report-local finding IDs and materiality (`BLOCKER`, `MATERIAL`, `DEFER` or `INFORMATIONAL`). BLOCKER/MATERIAL findings must state the affected invariant, consequence and smallest acceptable correction. The controller rejects contradictory references, untrusted gate context, unsupported audit-loop confidence and a complexity `BLOCK` paired with an unqualified positive verdict. Strict reports use `decision_control.primary_next_action` as their only action channel; legacy `next_actions` are retained only for backward-compatible rendering. Older reports remain readable and render missing controls as `UNKNOWN`; they are not silently upgraded to current validation status.
 
 Work package 1 does **not** establish a complete execution security boundary. Verify mode remains dependent on the next work package: a separate credential-free repository executor, approved command policy, restricted network, independently captured command traces and known-answer evaluation. Do not enable verify mode for unknown repositories carrying production credentials.
+
+### Product direction and benchmark
+
+The practical workflow is: a coding agent reports completion, TAKAVEN independently challenges the result, authorised evidence is checked where safe, and the owner decides whether the gate genuinely passes. Success is measured by reduced false confidence, real defect discovery, reproducible controller-owned evidence and less unnecessary engineering—not by commercial superiority over Codex or Claude.
+
+The approved benchmark asks: **Does TAKAVEN materially improve the owner's audit decisions compared with equally capable direct agentic reviews, especially by reducing false runtime confidence and providing reproducible controller-owned evidence?** It must compare TAKAVEN using Codex with direct agentic Codex and direct agentic Claude Code, using the same pinned source, brief, mission and operating contract. It must include at least one real personal-project `verify` audit, seeded runtime, security/authority/integrity and scope/architecture defects, blind grading, false-PASS rate as the primary metric, defect recall, false positives, root-cause quality, unnecessary remediation, wall-clock time, model calls, operator minutes and whether the owner decision changed. The benchmark is documented but is not run by this maintenance pass.
+
+After personal use, features are kept, simplified or removed according to whether they changed an important decision, prevented false confidence, improved reproducibility or reduced manual burden. A future capability requires a recurring demonstrated weakness, evidence that the current mechanism cannot solve it, the smallest sufficient addition and benchmark or real-use validation.
+
+Future exploration only—not approved implementation—includes command auto-discovery, controller-owned check-the-checks/mutation verification, specialised audit reviewers, a thin Claude/model-diversity adapter, GitHub Action gate automation and ChatGPT Dots for recurring project context. No such capability should be built because it is merely theoretically useful.
 
 ## How to run
 

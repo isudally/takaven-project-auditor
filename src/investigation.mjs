@@ -13,7 +13,7 @@ export const MAX_RETRIEVAL_BYTES = 128 * 1024;
 const REQUEST_TYPES = new Set(['source_search', 'source_read', 'runtime_evidence', 'experiment', 'experiment_spec']);
 const EXPERIMENTS = new Set(['build', 'declared_test', 'browser_smoke']);
 const EXPERIMENT_NAME = /^[a-z][a-z0-9_-]{0,63}$/;
-const EXPERIMENT_SPEC_KEYS = new Set(['type', 'query', 'paths', 'evidence_ids', 'experiment', 'reason', 'patch', 'continuation', 'ranges', 'hypothesis', 'invariant', 'parameters', 'positive_control', 'negative_control', 'required_observations', 'falsification_conditions']);
+const EXPERIMENT_SPEC_KEYS = new Set(['type', 'query', 'paths', 'evidence_ids', 'experiment', 'reason', 'continuation', 'ranges', 'hypothesis', 'invariant', 'parameters', 'positive_control', 'negative_control', 'required_observations', 'falsification_conditions']);
 const FORBIDDEN_EXPERIMENT_PARAMETER_KEYS = new Set(['args', 'arguments', 'command', 'commands', 'cwd', 'env', 'executable', 'path', 'script', 'shell']);
 const MAX_EXPERIMENT_SPEC_BYTES = 16 * 1024;
 const SKIP_DIRS = new Set(['.git', 'node_modules', 'dist', 'build', 'coverage', '.next']);
@@ -109,8 +109,8 @@ export function validateInvestigationResponse(value, registry) {
   if (value.action === 'final' && value.requests.length !== 0) throw new Error('Final investigation response cannot contain requests');
   for (const [index, request] of value.requests.entries()) {
     if (!request || typeof request !== 'object' || Array.isArray(request)) throw new Error(`Invalid investigation request ${index}`);
-    for (const key of Object.keys(request)) if (!EXPERIMENT_SPEC_KEYS.has(key)) throw new Error(`Unexpected investigation request field: ${key}`);
     if (!REQUEST_TYPES.has(request.type)) throw new Error(`Unsupported investigation request type: ${request.type}`);
+    for (const key of Object.keys(request)) if (!EXPERIMENT_SPEC_KEYS.has(key)) throw new Error(`Unexpected investigation request field: ${key}`);
     if (request.reason !== undefined && request.reason !== null && (typeof request.reason !== 'string' || request.reason.length > 1000)) throw new Error(`Invalid request reason ${index}`);
     if (request.type === 'source_search') safeQuery(request.query);
     if (request.type === 'source_read') {
@@ -129,19 +129,6 @@ export function validateInvestigationResponse(value, registry) {
     if (request.type === 'experiment_spec') validateExperimentSpecification(request);
   }
   return value;
-}
-
-export function findInvalidCorrectionPatch(value, registry) {
-  if (!value || !Array.isArray(value.requests)) return null;
-  for (const [index, request] of value.requests.entries()) {
-    if (request?.type !== 'correction_verification' || request.patch === undefined || request.patch === null) continue;
-    try {
-      validateProposedPatch(request.patch);
-    } catch (error) {
-      return { index, patch: request.patch, error: error.message };
-    }
-  }
-  return null;
 }
 
 function contentHash(content) {

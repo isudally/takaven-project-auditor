@@ -510,6 +510,42 @@ function mergeInvestigationCoverage(coverage, investigationCoverage) {
   };
 }
 
+async function validateFinalReportWithRetry({ binary, cwd, basePrompt, reportSchema, responsePath, registry, report, mode, project, commit, source, coverage, gateContext, auditHistory, investigationHistory, investigate, timeoutMs }) {
+  let currentReport = report;
+  let retryUsed = false;
+  while (true) {
+    const auditedAt = new Date().toISOString();
+    const trustedModelReport = applyTrustedMetadata(currentReport, { project, commit, mode, source, auditedAt, coverage, gateContext });
+    const modelReportEvidenceId = captureEvidence(registry, {
+      type: 'model_report', action: 'model_output', attempt: retryUsed ? 2 : 1, outcome: 'received', content: currentReport,
+      runtime_status: currentReport.runtime_status, runtime_evidence: currentReport.runtime_evidence,
+    });
+    const runtimeHandoff = applyControllerRuntimeResults(trustedModelReport, registry, { scenario: registry.scenario, mode });
+    if (runtimeHandoff.contradictions.length > 0) {
+      captureEvidence(registry, {
+        type: 'model_runtime_contradiction', action: 'controller_validation', outcome: 'failed_attempt',
+        model_report_evidence_id: modelReportEvidenceId, contradictions: runtimeHandoff.contradictions,
+      });
+    }
+    try {
+      validateReport(runtimeHandoff.report, { mode, evidenceRegistry: registry, requireEvidenceIds: true, requireDecisionControls: true, trustedGateContext: gateContext, trustedHistory: auditHistory });
+      return runtimeHandoff.report;
+    } catch (error) {
+      const feedbackEvidenceId = captureEvidence(registry, {
+        type: 'controller_validation', action: 'semantic_validation', outcome: retryUsed ? 'retry_exhausted' : 'retry_requested',
+        model_report_evidence_id: modelReportEvidenceId, validation_error: error.message,
+        feedback: `The controller rejected the final report during semantic validation: ${error.message}`,
+      });
+      if (retryUsed) throw error;
+      retryUsed = true;
+      const feedback = `The controller rejected the previous report during semantic validation (${feedbackEvidenceId}): ${error.message}. Return one complete replacement report JSON. Do not weaken the contract, invent evidence, or change trusted metadata.`;
+      const retryPrompt = finalInvestigationPrompt(basePrompt, registry, investigationHistory, feedback);
+      await runCodex({ binary, args: buildCodexArgs({ mode: investigate ? 'inspect' : mode, schema: reportSchema, responsePath }), cwd, prompt: retryPrompt, timeoutMs });
+      currentReport = JSON.parse(readFileSync(responsePath, 'utf8'));
+    }
+  }
+}
+
 function cloneLocalRepository(source, checkout, scratch, ref) {
   try {
     command('git', ['clone', '--quiet', '--no-hardlinks', '--', source, checkout], { timeout: 120000 });
@@ -629,19 +665,16 @@ async function main(){
       await runCodex({binary:process.env.TAKAVEN_CODEX_BIN||'codex',args:codexArgs,cwd:scratch,prompt,timeoutMs:configuredTimeout()});
       modelReport = JSON.parse(readFileSync(responsePath,'utf8'));
     }
-    const auditedAt = new Date().toISOString();
-    const trustedModelReport = applyTrustedMetadata(modelReport, { project: name, commit, mode: args.mode, source: originalSource, auditedAt, coverage, gateContext });
-    const modelReportEvidenceId = captureEvidence(registry, { type: 'model_report', action: 'model_output', outcome: 'received', content: modelReport, runtime_status: modelReport.runtime_status, runtime_evidence: modelReport.runtime_evidence });
-    const runtimeHandoff = applyControllerRuntimeResults(trustedModelReport, registry, { scenario: registry.scenario, mode: args.mode });
-    if (runtimeHandoff.contradictions.length > 0) {
-      captureEvidence(registry, { type: 'model_runtime_contradiction', action: 'controller_validation', outcome: 'failed_attempt', model_report_evidence_id: modelReportEvidenceId, contradictions: runtimeHandoff.contradictions });
+    const report = await validateFinalReportWithRetry({
+      binary: process.env.TAKAVEN_CODEX_BIN || 'codex', cwd: scratch, basePrompt: prompt, reportSchema: schema,
+      responsePath: join(scratch, args.investigate ? 'codex-final-report.json' : 'codex-response.json'), registry,
+      report: modelReport, mode: args.mode, project: name, commit, source: originalSource, coverage, gateContext,
+      auditHistory, investigationHistory, investigate: args.investigate, timeoutMs: configuredTimeout(),
+    });
+    if (args.investigate && report.proposed_patch) {
+      const patch = validateProposedPatch(report.proposed_patch);
+      captureEvidence(registry, { type: 'proposed_patch', action: 'model_output', outcome: 'captured_not_applied', paths: patch.paths, patch: report.proposed_patch });
     }
-    validateReport(runtimeHandoff.report,{mode:args.mode,evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true,trustedGateContext:gateContext,trustedHistory:auditHistory});
-    if (args.investigate && runtimeHandoff.report.proposed_patch) {
-      const patch = validateProposedPatch(runtimeHandoff.report.proposed_patch);
-      captureEvidence(registry, { type: 'proposed_patch', action: 'model_output', outcome: 'captured_not_applied', paths: patch.paths, patch: modelReport.proposed_patch });
-    }
-    const report = runtimeHandoff.report;
     // Verify mode changes are never pushed and never leave the disposable workspace.
     mkdirSync(output,{recursive:true});
     writeFileSync(join(output,'report.json'),JSON.stringify(report,null,2)+'\n',{mode:0o600});

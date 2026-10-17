@@ -10,7 +10,7 @@ const ids = [...prompt.matchAll(/ev-[a-f0-9]{16}/g)].map(match => match[0]);
 if (schema.endsWith('investigation-request.schema.json')) {
   const request = output.includes('investigation-1');
   writeFileSync(output, JSON.stringify(request
-    ? { action: 'request', rationale: 'The controller must execute the approved build check.', requests: [{ type: 'experiment', query: null, paths: null, evidence_ids: null, experiment: 'build', reason: 'Need the build result.', patch: null, continuation: null, ranges: null }] }
+    ? { action: 'request', rationale: 'The controller must execute the approved build check.', requests: [{ type: 'experiment', query: null, paths: null, evidence_ids: null, experiment: 'build', reason: 'Need the build result.', continuation: null, ranges: null }] }
     : { action: 'final', rationale: 'The controller result is available.', requests: [] }));
 } else {
   writeFileSync(output, JSON.stringify({

@@ -119,6 +119,40 @@ function malformedCorrectionRetryScenario(){
   } finally {rmSync(tmp,{recursive:true,force:true});}
 }
 
+function semanticReportRetryScenario(){
+  const runScenario = (mode) => {
+    const tmp=makeTemp(`auditor-semantic-${mode}-test`);
+    try {
+      const source=initFixture(tmp);
+      const out=join(tmp,'report');
+      const fakeCodex = mode === 'retry-fail' ? 'fake-codex-semantic-fail.mjs' : 'fake-codex-semantic-retry.mjs';
+      const result=run(process.execPath,[join(project,'src','audit.mjs'),'--path',source,'--mode','inspect','--out',out],{env:{...process.env,TAKAVEN_CODEX_BIN:join(project,'tests',fakeCodex),TAKAVEN_SCRATCH_ROOT:join(tmp,'scratch')}});
+      const evidencePath=join(out,'evidence-registry.json');
+      const failureEvidencePath=join(out,'failure-evidence-registry.json');
+      const evidence=JSON.parse(readFileSync(existsSync(evidencePath) ? evidencePath : failureEvidencePath,'utf8'));
+      const modelReports=evidence.registry.records.filter(record=>record.type==='model_report');
+      const semanticValidation=evidence.registry.records.filter(record=>record.action==='semantic_validation');
+      const report=existsSync(join(out,'report.json')) ? JSON.parse(readFileSync(join(out,'report.json'),'utf8')) : null;
+      return { result, evidence, modelReports, semanticValidation, report };
+    } finally {rmSync(tmp,{recursive:true,force:true});}
+  };
+  const valid = runScenario('valid-first');
+  assert.equal(valid.result.status,0,valid.result.stderr);
+  assert.equal(valid.modelReports.length,1);
+  assert.equal(valid.semanticValidation.length,0);
+  const recovered = runScenario('retry-success');
+  assert.equal(recovered.result.status,0,recovered.result.stderr);
+  assert.equal(recovered.modelReports.length,2);
+  assert.deepEqual(recovered.semanticValidation.map(record=>record.outcome),['retry_requested']);
+  assert.equal(recovered.report.project,'source');
+  assert.equal(recovered.report.audit_mode,'inspect');
+  assert.notEqual(recovered.report.commit,'model-commit');
+  const exhausted = runScenario('retry-fail');
+  assert.notEqual(exhausted.result.status,0);
+  assert.equal(exhausted.modelReports.length,2);
+  assert.deepEqual(exhausted.semanticValidation.map(record=>record.outcome),['retry_requested','retry_exhausted']);
+}
+
 function executionHandoffScenario(){
   const tmp=makeTemp('auditor-execution-handoff-test');
   try{
@@ -183,6 +217,7 @@ test('controller integration scenarios', { concurrency: false }, () => {
   reportGuardScenario();
   investigationScenario();
   malformedFinalPatchScenario();
+  semanticReportRetryScenario();
   malformedCorrectionRetryScenario();
   executionHandoffScenario();
   browserAcceptanceHandoffScenario();

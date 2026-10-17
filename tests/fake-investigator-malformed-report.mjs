@@ -11,7 +11,7 @@ const evidenceId = ids[0];
 if (schema.endsWith('investigation-request.schema.json')) {
   const round = output.includes('investigation-1');
   writeFileSync(output, JSON.stringify(round
-    ? { action: 'request', rationale: 'Read the entry point before finalising.', requests: [{ type: 'source_read', query: null, paths: ['app.mjs'], evidence_ids: null, experiment: null, reason: null, patch: null, continuation: null, ranges: null }] }
+    ? { action: 'request', rationale: 'Read the entry point before finalising.', requests: [{ type: 'source_read', query: null, paths: ['app.mjs'], evidence_ids: null, experiment: null, reason: null, continuation: null, ranges: null }] }
     : { action: 'final', rationale: 'The bounded evidence is sufficient.', requests: [] }));
 } else {
   const retry = prompt.includes('proposed_patch field failed validation');

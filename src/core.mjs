@@ -268,7 +268,7 @@ export function validateReportWithOptions(value, { mode, evidenceRegistry, requi
   if (!Array.isArray(value.runtime_evidence)) throw new Error('runtime_evidence must be an array');
   value.runtime_evidence.forEach((entry, index) => {
     requireObject(entry, `runtime_evidence[${index}]`);
-    requireAllowedKeys(entry, ['check', 'status', 'command', 'observation', 'negative_control', 'evidence_ids'], `runtime_evidence[${index}]`);
+    requireAllowedKeys(entry, ['check', 'status', 'command', 'observation', 'negative_control'], ['evidence_ids'], `runtime_evidence[${index}]`);
     requireString(entry.check, `runtime_evidence[${index}].check`);
     requireString(entry.command, `runtime_evidence[${index}].command`);
     requireString(entry.observation, `runtime_evidence[${index}].observation`);
@@ -287,7 +287,7 @@ export function validateReportWithOptions(value, { mode, evidenceRegistry, requi
   value.findings.forEach((finding, index) => {
     requireObject(finding, `findings[${index}]`);
     const findingKeys = requireDecisionControls ? ['id', 'title', 'severity', 'evidence_type', 'evidence', 'location', 'recommended_fix', 'materiality', 'invariant', 'consequence', 'smallest_correction', 'evidence_ids'] : ['title', 'severity', 'evidence_type', 'evidence', 'location', 'recommended_fix', 'evidence_ids'];
-    requireAllowedKeys(finding, findingKeys, `findings[${index}]`);
+    requireAllowedKeys(finding, requireDecisionControls ? findingKeys : findingKeys.filter(key => key !== 'evidence_ids'), requireDecisionControls ? [] : ['evidence_ids'], `findings[${index}]`);
     for (const field of ['title', 'evidence', 'location', 'recommended_fix']) requireString(finding[field], `findings[${index}].${field}`);
     if (requireDecisionControls) {
       if (typeof finding.id !== 'string' || !/^F-[0-9]{3,}$/.test(finding.id)) throw new Error(`findings[${index}].id must be a report-local F-### identifier`);
@@ -424,10 +424,10 @@ function requireExactKeys(value, keys, field, optionalKeys = []) {
   for (const key of keys.filter(key => !optionalKeys.includes(key))) if (!(key in value)) throw new Error(`Missing field ${field}.${key}`);
 }
 
-function requireAllowedKeys(value, keys, field) {
-  const allowed = new Set(keys);
+function requireAllowedKeys(value, requiredKeys, optionalKeys, field) {
+  const allowed = new Set([...requiredKeys, ...optionalKeys]);
   for (const key of Object.keys(value)) if (!allowed.has(key)) throw new Error(`Unexpected field ${field}.${key}`);
-  for (const key of keys.slice(0, 5)) if (!(key in value)) throw new Error(`Missing field ${field}.${key}`);
+  for (const key of requiredKeys) if (!(key in value)) throw new Error(`Missing field ${field}.${key}`);
 }
 
 function requireString(value, field) {
