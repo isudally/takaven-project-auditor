@@ -201,6 +201,7 @@ function renderViability(assessment) {
     evidence_for_value: [], evidence_against_value: [], substitutes: [], unique_value: 'UNKNOWN', proof_gap: 'Run a current viability assessment.',
     strongest_stop_case: 'UNKNOWN', strongest_continue_case: 'UNKNOWN', would_start_today: 'UNKNOWN', next_validation: null, override: null,
   };
+  const overrideEvidenceIds = value.override?.evidence_ids ?? value.override?.new_evidence_ids ?? [];
   const claims = items => items?.length ? items.map(item => `- ${escapeNarrative(item.claim)}${item.evidence_ids?.length ? ` (${escapeMd(item.evidence_ids.join(', '))})` : ''}`) : ['- None evidenced.'];
   const substitutes = value.substitutes?.length ? value.substitutes.map(item => `- **${escapeMd(item.name)}** — ${escapeNarrative(item.assessment)}${item.evidence_ids?.length ? ` (${escapeMd(item.evidence_ids.join(', '))})` : ''}`) : ['- None assessed.'];
   return [
@@ -218,7 +219,7 @@ function renderViability(assessment) {
     `- Strongest continue case: ${escapeNarrative(value.strongest_continue_case)}`,
     `- Proof gap: ${escapeNarrative(value.proof_gap)}`,
     ...(value.next_validation ? ['', `- Next validation: **${escapeMd(value.next_validation.title)}**`, ...(value.next_validation.substeps ?? []).map(step => `  - ${escapeNarrative(step)}`)] : []),
-    ...(value.override ? ['', `- Evidence-backed override: ${escapeNarrative(value.override.rationale)} (${escapeMd(value.override.evidence_ids.join(', '))})`] : []),
+    ...(value.override ? ['', `- Evidence-backed override: ${escapeNarrative(value.override.rationale)} (${escapeMd(overrideEvidenceIds.join(', '))})`] : []),
     '',
   ];
 }

@@ -250,6 +250,8 @@ test('legacy reports render with safe UNKNOWN controls',()=>{
   const md=renderMarkdown(sample,{source:'repo',mode:'inspect',timestamp:'now'});
   assert.match(md,/Complexity gate: \*\*UNKNOWN\*\*/);
   assert.match(md,/Audit-loop risk: \*\*UNKNOWN\*\*/);
+  const legacyOverride=renderMarkdown({...sample,viability_assessment:{...sample.viability_assessment,status:'PLAUSIBLE',next_validation:null,override:{previous_status:'KILL',new_evidence_ids:['ev-0000000000000000'],rationale:'Legacy override.'}}},{source:'repo',mode:'inspect',timestamp:'now'});
+  assert.match(legacyOverride,/Legacy override/);
 });
 test('audit history is controller-bound rather than self-asserted',()=>{
   assert.throws(()=>validateAuditHistory({validated:true,previous_commit:'abc'}),/cannot self-assert/);
