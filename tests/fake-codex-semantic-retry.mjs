@@ -10,7 +10,7 @@ const mode = process.cwd().includes('retry-fail') ? 'retry-fail' : process.cwd()
 const invalid = mode === 'retry-success' ? !retryRequested : mode === 'retry-fail';
 const report = {
   project: 'model-project', commit: 'model-commit', verdict: 'INCONCLUSIVE', technical_verdict: 'INCONCLUSIVE',
-  viability_assessment: {project_type:'UNKNOWN',status:'PLAUSIBLE',problem:'Fixture only.',beneficiary:'Fixture test',evidence_for_value:[],evidence_against_value:[],substitutes:[],unique_value:'Fixture only.',proof_gap:'No value assessment.',strongest_stop_case:'Fixture only.',strongest_continue_case:'Fixture only.',would_start_today:'UNKNOWN',next_validation:null,override:null},
+  viability_assessment: {project_type:'UNKNOWN',status:'UNKNOWN',problem:'Fixture only.',beneficiary:'Fixture test',evidence_for_value:[],evidence_against_value:[],substitutes:[],unique_value:'Fixture only.',proof_gap:'No value assessment.',strongest_stop_case:'Fixture only.',strongest_continue_case:'Fixture only.',would_start_today:'UNKNOWN',next_validation:{title:'Review the source evidence.',substeps:[]},override:null},
   executive_summary: 'Semantic retry contract fixture.', runtime_status: 'NOT RUN', runtime_evidence: [], findings: [],
   product_assessment: { purpose_fit: 'UNKNOWN', strengths: [], opportunities: [], reuse_or_simplify: [] },
   complexity_assessment: { status: 'UNKNOWN', summary: 'No runtime was requested.', items: [] },

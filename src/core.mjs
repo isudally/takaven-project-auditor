@@ -218,7 +218,7 @@ function renderViability(assessment) {
     `- Strongest continue case: ${escapeNarrative(value.strongest_continue_case)}`,
     `- Proof gap: ${escapeNarrative(value.proof_gap)}`,
     ...(value.next_validation ? ['', `- Next validation: **${escapeMd(value.next_validation.title)}**`, ...(value.next_validation.substeps ?? []).map(step => `  - ${escapeNarrative(step)}`)] : []),
-    ...(value.override ? ['', `- Override: ${escapeNarrative(value.override.rationale)} (${escapeMd(value.override.new_evidence_ids.join(', '))})`] : []),
+    ...(value.override ? ['', `- Evidence-backed override: ${escapeNarrative(value.override.rationale)} (${escapeMd(value.override.evidence_ids.join(', '))})`] : []),
     '',
   ];
 }
@@ -293,14 +293,6 @@ function validateViabilityClaims(items, field, evidenceRegistry, requireEvidence
   });
 }
 
-function collectViabilityEvidenceIds(assessment) {
-  return [
-    ...(assessment?.evidence_for_value ?? []).flatMap(item => item.evidence_ids ?? []),
-    ...(assessment?.evidence_against_value ?? []).flatMap(item => item.evidence_ids ?? []),
-    ...(assessment?.substitutes ?? []).flatMap(item => item.evidence_ids ?? []),
-  ];
-}
-
 function validateViabilityAssessment(value, { evidenceRegistry, requireEvidenceIds, trustedHistory } = {}) {
   requireObject(value, 'viability_assessment');
   requireExactKeys(value, [
@@ -333,11 +325,11 @@ function validateViabilityAssessment(value, { evidenceRegistry, requireEvidenceI
   }
   if (value.override !== null) {
     requireObject(value.override, 'viability_assessment.override');
-    requireExactKeys(value.override, ['previous_status', 'new_evidence_ids', 'rationale'], 'viability_assessment.override');
+    requireExactKeys(value.override, ['previous_status', 'evidence_ids', 'rationale'], 'viability_assessment.override');
     if (!VALUE_STATUSES.has(value.override.previous_status)) throw new Error('Invalid viability override.previous_status');
-    if (!Array.isArray(value.override.new_evidence_ids) || value.override.new_evidence_ids.length === 0) throw new Error('viability_assessment.override.new_evidence_ids must contain evidence IDs');
-    validateEvidenceIds(value.override.new_evidence_ids, evidenceRegistry, 'viability_assessment.override.new_evidence_ids');
-    if (requireEvidenceIds && !value.override.new_evidence_ids.every(id => isEligibleFindingEvidence(evidenceRegistry, id))) throw new Error('viability_assessment.override requires eligible controller evidence');
+    if (!Array.isArray(value.override.evidence_ids) || value.override.evidence_ids.length === 0) throw new Error('viability_assessment.override.evidence_ids must contain evidence IDs');
+    validateEvidenceIds(value.override.evidence_ids, evidenceRegistry, 'viability_assessment.override.evidence_ids');
+    if (requireEvidenceIds && !value.override.evidence_ids.every(id => isEligibleFindingEvidence(evidenceRegistry, id))) throw new Error('viability_assessment.override requires eligible controller evidence');
     requireString(value.override.rationale, 'viability_assessment.override.rationale');
   }
 
@@ -351,8 +343,6 @@ function validateViabilityAssessment(value, { evidenceRegistry, requireEvidenceI
   const previous = trustedHistory?.previous_report?.viability_assessment;
   if (previous && ['KILL', 'CHALLENGED'].includes(previous.status) && VALUE_STATUS_STRENGTH[value.status] > VALUE_STATUS_STRENGTH[previous.status]) {
     if (!value.override || value.override.previous_status !== previous.status) throw new Error('Improving a prior viability decision requires an evidence-backed override');
-    const previousIds = new Set(collectViabilityEvidenceIds(previous));
-    if (!value.override.new_evidence_ids.some(id => !previousIds.has(id))) throw new Error('Viability override requires genuinely new evidence');
   }
   return value;
 }
@@ -515,6 +505,10 @@ function validateDecisionControls(value, { evidenceRegistry, requireEvidenceIds,
   if (viability.would_start_today === 'NO' && value.verdict !== 'STOP') throw new Error('would_start_today NO requires overall STOP');
   if (viability.status === 'CHALLENGED' && value.verdict === 'CONTINUE') throw new Error('Viability CHALLENGED cannot coexist with CONTINUE');
   if (viability.status === 'UNPROVEN' && value.verdict === 'CONTINUE') throw new Error('Viability UNPROVEN cannot coexist with CONTINUE');
+  if (viability.status === 'UNKNOWN' && value.verdict === 'CONTINUE') throw new Error('Viability UNKNOWN cannot coexist with CONTINUE');
+  const affirmativeValueEvidence = viability.evidence_for_value.some(item => item.evidence_ids.length > 0);
+  if (value.verdict === 'CONTINUE' && !affirmativeValueEvidence) throw new Error('Overall CONTINUE requires affirmative eligible value evidence');
+  if (requireEvidenceIds && ['YES', 'YES_BUT_SMALLER'].includes(viability.would_start_today) && !affirmativeValueEvidence) throw new Error('Affirmative would_start_today requires eligible value evidence');
   if (value.technical_verdict === 'STOP' && value.verdict !== 'STOP') throw new Error('Technical STOP requires overall STOP');
   if (VALUE_VALIDATION_STATUSES.has(viability.status)) {
     if (JSON.stringify(viability.next_validation) !== JSON.stringify(controls.primary_next_action)) throw new Error('viability next_validation must match decision_control.primary_next_action');

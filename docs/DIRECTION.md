@@ -21,8 +21,10 @@ keeps technical status separate from value status and makes value a veto over
 unqualified continuation. It is deliberately not a business-plan generator,
 market-research service or numeric scoring system. It reuses controller
 evidence, requires the cheapest next validation when value is UNPROVEN,
-CHALLENGED or UNKNOWN, and requires genuinely new eligible evidence before a
-prior CHALLENGED/KILL conclusion can be improved.
+CHALLENGED or UNKNOWN, and requires current eligible evidence plus an explicit
+evidence-backed override before a prior CHALLENGED/KILL conclusion can be
+improved. The controller does not prove substantive evidence novelty across
+commits.
 
 The bounded cleanup pass is complete when its focused and full tests are green. The next evidence gate is one personal-use seeded-defect benchmark. It is not run by this pass.
 

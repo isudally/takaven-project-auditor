@@ -21,7 +21,7 @@
         "strongest_continue_case": {"type": "string"},
         "would_start_today": {"type": "string", "enum": ["YES", "YES_BUT_SMALLER", "NOT_YET", "NO", "UNKNOWN"]},
         "next_validation": {"type": ["object", "null"], "properties": {"title": {"type": "string"}, "substeps": {"type": "array", "items": {"type": "string"}}}, "required": ["title", "substeps"], "additionalProperties": false},
-        "override": {"type": ["object", "null"], "properties": {"previous_status": {"type": "string", "enum": ["PROVEN", "PLAUSIBLE", "UNPROVEN", "CHALLENGED", "KILL", "UNKNOWN"]}, "new_evidence_ids": {"type": "array", "items": {"type": "string", "pattern": "^ev-[a-f0-9]{16}$"}, "minItems": 1}, "rationale": {"type": "string"}}, "required": ["previous_status", "new_evidence_ids", "rationale"], "additionalProperties": false}
+        "override": {"type": ["object", "null"], "properties": {"previous_status": {"type": "string", "enum": ["PROVEN", "PLAUSIBLE", "UNPROVEN", "CHALLENGED", "KILL", "UNKNOWN"]}, "evidence_ids": {"type": "array", "items": {"type": "string", "pattern": "^ev-[a-f0-9]{16}$"}, "minItems": 1}, "rationale": {"type": "string"}}, "required": ["previous_status", "evidence_ids", "rationale"], "additionalProperties": false}
       },
       "required": ["project_type", "status", "problem", "beneficiary", "evidence_for_value", "evidence_against_value", "substitutes", "unique_value", "proof_gap", "strongest_stop_case", "strongest_continue_case", "would_start_today", "next_validation", "override"],
       "additionalProperties": false
