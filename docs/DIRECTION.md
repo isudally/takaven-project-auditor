@@ -16,7 +16,18 @@ These strengths are about reproducibility and trustworthy decisions, not exclusi
 
 ## Current work
 
-The bounded cleanup pass is complete when its focused and full tests are green. The next evidence gate is one personal-use seeded-defect benchmark. It is not run by this pass.
+The personal benchmark demonstrated that TAKAVEN's controller-owned Codex path
+works while an outer nested helper could not launch a direct comparison. The
+minimum local autonomy required for normal personal use is therefore now
+approved: the controller may launch a direct local Codex reviewer itself from a
+disposable checkout, capture the raw review and execution metadata, and report a
+truthful environment failure. This is not a daemon, worker service or general
+agent platform. Existing TAKAVEN audit results remain unchanged; the direct
+review is a comparison control rather than a structured TAKAVEN report.
+
+The next evidence gate is the personal-use seeded-defect benchmark using this
+controller-owned direct path. The owner should normally provide the audit goal
+and project, not copy prompts between tools or shuttle result files.
 
 ## Benchmark decision gate
 
@@ -28,7 +39,8 @@ Primary metric: false-PASS rate on seeded runtime claims. Secondary measures inc
 
 Not approved for implementation in the current pass:
 
-- command auto-discovery and lower-ceremony verify setup;
+- command auto-discovery and lower-ceremony verify setup (conditional future
+  work; not demonstrated as the dominant remaining friction);
 - controller-owned check-the-checks or mutation verification;
 - specialised security, architecture, runtime or product reviewers;
 - a thin Claude/model-diversity adapter;

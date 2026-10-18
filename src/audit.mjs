@@ -1,15 +1,15 @@
 #!/usr/bin/env node
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, lstatSync, realpathSync, existsSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, lstatSync, realpathSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { tmpdir } from 'node:os';
 import { join, resolve, dirname, sep, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync, spawn } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { parseArgs, renderMarkdown, validateReport, applyTrustedMetadata, promptForRun, readProjectBrief, readGateContext, readAuditHistory } from './core.mjs';
 import { createEvidenceRegistry, captureEvidence, evidenceRegistryIndex, serialiseEvidenceRegistry, redactEvidenceText } from './evidence.mjs';
 import { MAX_INVESTIGATION_ROUNDS, processInvestigationRequests, validateInvestigationResponse, validateProposedPatch } from './investigation.mjs';
 import { createApprovedRunner, loadRunnerConfig, requiredChecksForConfig } from './runner.mjs';
 import { applyControllerRuntimeResults } from './runtime.mjs';
+import { configuredTimeout, createScratch, runCodex } from './codex.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const help = `TAKAVEN Project Auditor v0.1\n\nUsage:\n  node src/audit.mjs --repo https://github.com/owner/repo [--ref main] [--brief ./project-brief.json] [--brief-provenance unspecified|owner-confirmed|repository-derived] [--mode inspect|verify] [--out ./reports/project]\n  node src/audit.mjs --path /path/to/local/git/repo [--brief ./project-brief.json] [--brief-provenance unspecified|owner-confirmed|repository-derived] [--mode inspect|verify]\n\nModes:\n  inspect (default): code and architecture only; never executes repository code\n  verify: execute approved checks through the controller-mediated investigative path; requires --investigate\n\nBrief provenance is controller-selected metadata. The brief JSON cannot self-declare owner authority; omitted provenance is unspecified.\n\nPrerequisites: Git, Node.js >=20, Codex CLI installed and authenticated.\n\nCAUTION: The verify mode may execute repository scripts. Use only with code you trust, preferably in a separate VM/container with no production secrets. The Codex sandbox is not a substitute for a dedicated security boundary.`;
@@ -20,12 +20,6 @@ function command(file, args, options={}) {
   if (result.status!==0) throw new Error(`${file} ${args[0]} failed: ${(result.stderr||result.stdout||'').slice(0,700)}`);
   return result.stdout.trim();
 }
-
-const CODEX_ENV_ALLOWLIST = [
-  'PATH', 'Path', 'PATHEXT', 'SystemRoot', 'WINDIR', 'ComSpec',
-  'TEMP', 'TMP', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA',
-  'CODEX_HOME', 'LANG', 'LC_ALL', 'CI', 'TERM', 'TERM_PROGRAM'
-];
 
 const SNAPSHOT_SKIP_DIRS = new Set(['.git', 'node_modules', 'dist', 'build', 'coverage', '.next']);
 const SNAPSHOT_SKIP_FILES = /^(?:\.env(?:\..*)?|.*\.(?:pem|key|p12|pfx|sqlite|db))$/i;
@@ -205,32 +199,12 @@ export function collectRepositorySnapshot(targetRoot) {
   };
 }
 
-function codexEnvironment() {
-  const env = {};
-  for (const key of CODEX_ENV_ALLOWLIST) if (process.env[key] !== undefined) env[key] = process.env[key];
-  return env;
-}
-
-function configuredTimeout() {
-  const raw = process.env.TAKAVEN_CODEX_TIMEOUT_MS;
-  if (raw === undefined) return 10 * 60 * 1000;
-  const value = Number(raw);
-  if (!Number.isInteger(value) || value < 100) throw new Error('TAKAVEN_CODEX_TIMEOUT_MS must be an integer of at least 100 milliseconds');
-  return value;
-}
-
 function configuredInvestigationDeadline() {
   const raw = process.env.TAKAVEN_INVESTIGATION_DEADLINE_MS;
   if (raw === undefined) return 15 * 60 * 1000;
   const value = Number(raw);
   if (!Number.isInteger(value) || value < 1000) throw new Error('TAKAVEN_INVESTIGATION_DEADLINE_MS must be an integer of at least 1000 milliseconds');
   return value;
-}
-
-function createScratch() {
-  const base = process.env.TAKAVEN_SCRATCH_ROOT ? resolve(process.env.TAKAVEN_SCRATCH_ROOT) : tmpdir();
-  mkdirSync(base, { recursive: true });
-  return mkdtempSync(join(base, 'takaven-audit-'));
 }
 
 export function buildCodexArgs({ mode, schema, responsePath }) {
@@ -270,62 +244,6 @@ export function resolveCodexCommand(binary, args) {
     }
   }
   return { file: binary, args };
-}
-
-function terminateProcessTree(agent) {
-  if (!agent.pid) return;
-  if (process.platform === 'win32') {
-    const killer = spawn('taskkill', ['/pid', String(agent.pid), '/t', '/f'], { stdio: 'ignore', windowsHide: true, detached: true });
-    killer.unref();
-    // TerminateProcess is immediate for the direct child even if taskkill is
-    // restricted by the host; taskkill still handles descendants when allowed.
-    try { agent.kill(); } catch {}
-  } else {
-    try { process.kill(-agent.pid, 'SIGTERM'); } catch { try { agent.kill('SIGTERM'); } catch {} }
-    setTimeout(() => { try { process.kill(-agent.pid, 'SIGKILL'); } catch { try { agent.kill('SIGKILL'); } catch {} } }, 750).unref();
-  }
-}
-
-function runCodex({ binary, args, cwd, prompt, timeoutMs }) {
-  const resolved = resolveCodexCommand(binary, args);
-  return new Promise((resolveRun, rejectRun) => {
-    const agent = spawn(resolved.file, resolved.args, {
-      cwd,
-      env: codexEnvironment(),
-      windowsHide: true,
-      detached: process.platform !== 'win32',
-      stdio: ['pipe', 'ignore', 'pipe']
-    });
-    let stderr = '';
-    let timedOut = false;
-    let forceTimer;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      terminateProcessTree(agent);
-      forceTimer = setTimeout(() => terminateProcessTree(agent), 1000);
-    }, timeoutMs);
-    const finish = (callback, value) => {
-      clearTimeout(timer);
-      if (forceTimer) clearTimeout(forceTimer);
-      callback(value);
-    };
-    agent.stderr.on('data', chunk => {
-      stderr += String(chunk);
-      if (stderr.length > 5000) stderr = stderr.slice(-5000);
-    });
-    agent.on('error', error => finish(rejectRun, error));
-    agent.on('close', code => {
-      if (timedOut) {
-        finish(rejectRun, new Error(`Codex timed out after ${timeoutMs}ms`));
-      } else if (code !== 0) {
-        finish(rejectRun, new Error(`Codex exited ${code}: ${stderr.slice(-1200)}`));
-      } else {
-        finish(resolveRun, { stderr });
-      }
-    });
-    agent.stdin.on('error', () => {});
-    agent.stdin.end(prompt);
-  });
 }
 
 function cleanupScratch(scratch) {

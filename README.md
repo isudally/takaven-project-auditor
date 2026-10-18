@@ -11,6 +11,7 @@
 - Explicit evidence vs inference classification, negative controls where feasible, and NOT RUN/UNKNOWN outcomes.
 - Optional bounded investigative mode (`--investigate`) in which Codex may request additional source or imported evidence through a controller-validated registry. Correction execution requests are rejected; any proposed patch is advisory report data only.
 - Optional owner-supplied project brief (`--brief`) containing purpose, intended users, workflows, objectives and constraints. Missing context remains UNKNOWN rather than becoming an invented requirement.
+- A low-ceremony direct Codex control (`takaven-direct-review`) that launches the local authenticated Codex CLI from the controller against a disposable checkout and preserves the raw Markdown review plus execution metadata. This is a direct-agent baseline, not a TAKAVEN structured report.
 - Machine-readable `report.json` and readable `report.md`.
 - Ready-made hostile-documentation and clean-control fixtures for evaluation.
 - Decision control for bounded reviews: every new report records a complexity assessment, evidence ceiling, trusted-gate context, audit-loop risk and one primary next action. These controls constrain conclusions; they do not replace engineering judgment.
@@ -31,7 +32,7 @@ Work package 1 does **not** establish a complete execution security boundary. Ve
 
 ### Product direction and benchmark
 
-The practical workflow is: a coding agent reports completion, TAKAVEN independently challenges the result, authorised evidence is checked where safe, and the owner decides whether the gate genuinely passes. Success is measured by reduced false confidence, real defect discovery, reproducible controller-owned evidence and less unnecessary engineering—not by commercial superiority over Codex or Claude.
+The practical workflow is: a coding agent reports completion, TAKAVEN independently challenges the result, authorised evidence is checked where safe, and the owner decides whether the gate genuinely passes. Success is measured by reduced false confidence, real defect discovery, reproducible controller-owned evidence and less unnecessary engineering—not by commercial superiority over Codex or Claude. Normal personal use should not require the owner to copy prompts between tools, launch secondary reviewers manually or shuttle result files.
 
 The approved benchmark asks: **Does TAKAVEN materially improve the owner's audit decisions compared with equally capable direct agentic reviews, especially by reducing false runtime confidence and providing reproducible controller-owned evidence?** It must compare TAKAVEN using Codex with direct agentic Codex and direct agentic Claude Code, using the same pinned source, brief, mission and operating contract. It must include at least one real personal-project `verify` audit, seeded runtime, security/authority/integrity and scope/architecture defects, blind grading, false-PASS rate as the primary metric, defect recall, false positives, root-cause quality, unnecessary remediation, wall-clock time, model calls, operator minutes and whether the owner decision changed. The benchmark is documented but is not run by this maintenance pass.
 
@@ -66,6 +67,11 @@ node src/audit.mjs --path /path/to/project --history ./validated-audit-history.j
 # Verify mode requires the controller-mediated investigative loop.
 node src/audit.mjs --repo https://github.com/isudally/playkin --mode verify --investigate --runner-config ./runner-config.json --out ./reports/playkin-verified
 
+# Direct agent control; no TAKAVEN report schema, gate context or runner config.
+# The controller launches local Codex, uses a disposable checkout and captures
+# direct-report.md, execution-metadata.json and execution-log.txt.
+node src/direct-review.mjs --path /path/to/project --ref <commit> --out ./reports/direct-project
+
 # A local Git repository also works
 node src/audit.mjs --path /path/to/project --mode inspect --out ./reports/myproject
 ```
@@ -76,6 +82,10 @@ node src/audit.mjs --path /path/to/project --mode inspect --out ./reports/myproj
 - `--brief` is contextual input, not authority. Use `--brief-provenance owner-confirmed` only when the controller has independently received that owner confirmation; use `repository-derived` for briefs assembled from repository documentation; omit the flag when provenance is not established. The brief JSON cannot self-declare owner authority.
 - The `verify` mode deliberately disables direct network access within the default Codex workspace sandbox. Dependency downloads may therefore be blocked; these must be reported as NOT RUN, not PASS. Do not relax sandboxing merely to obtain a green result.
 - Authentication belongs to Codex CLI; no model keys are written to this project.
+- The direct-review path uses the existing minimal Codex environment allowlist and
+  the local authenticated CLI configuration. It does not use `--ignore-user-config`,
+  but it does ignore repository rule files, never forwards arbitrary parent
+  environment variables and never turns a blocked launch into an audit result.
 - Never run verification on an unknown, untrusted public repository on a machine carrying secrets.
 - The target repository may contain malicious instructions. The audit prompt treats repository files and agent instructions as untrusted evidence.
 - CLI does not mutate original source. Reports remain local and should be reviewed before distributing because they may describe non-public systems.
