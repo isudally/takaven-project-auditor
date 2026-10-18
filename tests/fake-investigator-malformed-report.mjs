@@ -16,7 +16,7 @@ if (schema.endsWith('investigation-request.schema.json')) {
 } else {
   const retry = prompt.includes('proposed_patch field failed validation');
   writeFileSync(output, JSON.stringify({
-    project: 'fake', commit: 'model-commit', verdict: 'MODIFY', executive_summary: 'The controller retained the invalid correction attempt and requested a bounded retry.',
+    project: 'fake', commit: 'model-commit', verdict: 'MODIFY', technical_verdict: 'MODIFY', viability_assessment:{project_type:'UNKNOWN',status:'UNKNOWN',problem:'Fixture only.',beneficiary:'Fixture test',evidence_for_value:[],evidence_against_value:[],substitutes:[],unique_value:'Fixture only.',proof_gap:'No value assessment.',strongest_stop_case:'Fixture only.',strongest_continue_case:'Fixture only.',would_start_today:'UNKNOWN',next_validation:{title:'Review the proposed correction.',substeps:[]},override:null}, executive_summary: 'The controller retained the invalid correction attempt and requested a bounded retry.',
     runtime_status: 'NOT RUN', runtime_evidence: [],
     findings: [{ id:'F-001', title: 'Observed source', severity: 'INFO', evidence_type: 'OBSERVED', evidence: 'The source was retrieved by the controller.', location: 'app.mjs:1', recommended_fix: 'None.', materiality:'INFORMATIONAL', invariant:'The source is retrievable.', consequence:'None established.', smallest_correction:'None.', evidence_ids: [evidenceId] }],
     product_assessment:{purpose_fit:'Fixture',strengths:[],opportunities:[],reuse_or_simplify:[]},

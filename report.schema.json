@@ -4,6 +4,28 @@
     "project": {"type": "string"},
     "commit": {"type": "string"},
     "verdict": {"type": "string", "enum": ["CONTINUE", "MODIFY", "STOP", "INCONCLUSIVE"]},
+    "technical_verdict": {"type": "string", "enum": ["CONTINUE", "MODIFY", "STOP", "INCONCLUSIVE"]},
+    "viability_assessment": {
+      "type": "object",
+      "properties": {
+        "project_type": {"type": "string", "enum": ["COMMERCIAL_PRODUCT", "INTERNAL_TOOL", "PERSONAL_TOOL", "MANDATED_DELIVERY", "UNKNOWN"]},
+        "status": {"type": "string", "enum": ["PROVEN", "PLAUSIBLE", "UNPROVEN", "CHALLENGED", "KILL", "UNKNOWN"]},
+        "problem": {"type": "string"},
+        "beneficiary": {"type": "string"},
+        "evidence_for_value": {"type": "array", "items": {"type": "object", "properties": {"claim": {"type": "string"}, "evidence_ids": {"type": "array", "items": {"type": "string", "pattern": "^ev-[a-f0-9]{16}$"}}}, "required": ["claim", "evidence_ids"], "additionalProperties": false}},
+        "evidence_against_value": {"type": "array", "items": {"type": "object", "properties": {"claim": {"type": "string"}, "evidence_ids": {"type": "array", "items": {"type": "string", "pattern": "^ev-[a-f0-9]{16}$"}}}, "required": ["claim", "evidence_ids"], "additionalProperties": false}},
+        "substitutes": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "assessment": {"type": "string"}, "evidence_ids": {"type": "array", "items": {"type": "string", "pattern": "^ev-[a-f0-9]{16}$"}}}, "required": ["name", "assessment", "evidence_ids"], "additionalProperties": false}},
+        "unique_value": {"type": "string"},
+        "proof_gap": {"type": "string"},
+        "strongest_stop_case": {"type": "string"},
+        "strongest_continue_case": {"type": "string"},
+        "would_start_today": {"type": "string", "enum": ["YES", "YES_BUT_SMALLER", "NOT_YET", "NO", "UNKNOWN"]},
+        "next_validation": {"type": ["object", "null"], "properties": {"title": {"type": "string"}, "substeps": {"type": "array", "items": {"type": "string"}}}, "required": ["title", "substeps"], "additionalProperties": false},
+        "override": {"type": ["object", "null"], "properties": {"previous_status": {"type": "string", "enum": ["PROVEN", "PLAUSIBLE", "UNPROVEN", "CHALLENGED", "KILL", "UNKNOWN"]}, "evidence_ids": {"type": "array", "items": {"type": "string", "pattern": "^ev-[a-f0-9]{16}$"}, "minItems": 1}, "rationale": {"type": "string"}}, "required": ["previous_status", "evidence_ids", "rationale"], "additionalProperties": false}
+      },
+      "required": ["project_type", "status", "problem", "beneficiary", "evidence_for_value", "evidence_against_value", "substitutes", "unique_value", "proof_gap", "strongest_stop_case", "strongest_continue_case", "would_start_today", "next_validation", "override"],
+      "additionalProperties": false
+    },
     "executive_summary": {"type": "string"},
     "runtime_status": {"type": "string", "enum": ["PASS", "FAIL", "PARTIAL", "NOT RUN"]},
     "runtime_evidence": {
@@ -134,6 +156,6 @@
     "next_actions": {"type": "array", "maxItems": 0, "items": {"type": "string"}},
     "proposed_patch": {"type": ["string", "null"]}
   },
-  "required": ["project", "commit", "verdict", "executive_summary", "runtime_status", "runtime_evidence", "findings", "product_assessment", "complexity_assessment", "decision_control", "reuse_assessment", "commercial_risks", "unverified", "next_actions", "proposed_patch"],
+  "required": ["project", "commit", "verdict", "technical_verdict", "viability_assessment", "executive_summary", "runtime_status", "runtime_evidence", "findings", "product_assessment", "complexity_assessment", "decision_control", "reuse_assessment", "commercial_risks", "unverified", "next_actions", "proposed_patch"],
   "additionalProperties": false
 }

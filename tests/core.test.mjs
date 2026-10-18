@@ -8,7 +8,20 @@ import { buildCodexArgs, resolveCodexCommand } from '../src/audit.mjs';
 import { createEvidenceRegistry, captureEvidence, redactEvidenceText } from '../src/evidence.mjs';
 import { readFileSync } from 'node:fs';
 
-const sample = {project:'demo',commit:'123',verdict:'MODIFY',executive_summary:'Build is broken.',runtime_status:'FAIL',runtime_evidence:[{check:'web boot',status:'FAIL',command:'npm test',observation:'TypeError',negative_control:'not required'}],findings:[{title:'Boot fails',severity:'HIGH',evidence_type:'OBSERVED',evidence:'startup exception',location:'src/app.js:10',recommended_fix:'fix token'}],reuse_assessment:['reuse templates'],commercial_risks:['no buyer evidence'],unverified:['sales'],next_actions:['fix boot']};
+const sample = {project:'demo',commit:'123',verdict:'MODIFY',technical_verdict:'MODIFY',viability_assessment:{project_type:'INTERNAL_TOOL',status:'UNKNOWN',problem:'A bounded internal problem.',beneficiary:'Owner',evidence_for_value:[],evidence_against_value:[],substitutes:[],unique_value:'Useful in this workflow.',proof_gap:'Measure repeated use.',strongest_stop_case:'Maintenance could exceed value.',strongest_continue_case:'The workflow is active.',would_start_today:'UNKNOWN',next_validation:{title:'Review the project.',substeps:[]},override:null},executive_summary:'Build is broken.',runtime_status:'FAIL',runtime_evidence:[{check:'web boot',status:'FAIL',command:'npm test',observation:'TypeError',negative_control:'not required'}],findings:[{title:'Boot fails',severity:'HIGH',evidence_type:'OBSERVED',evidence:'startup exception',location:'src/app.js:10',recommended_fix:'fix token'}],reuse_assessment:['reuse templates'],commercial_risks:['no buyer evidence'],unverified:['sales'],next_actions:['fix boot']};
+
+function strictReport(registry, overrides = {}) {
+  const evidenceId = captureEvidence(registry, {type:'source', action:'source_read', location:'README.md', content_hash:'sha256:test', content:'evidence', outcome:'retrieved'});
+  const report = {
+    ...sample,
+    commit: 'abc', runtime_status: 'NOT RUN', runtime_evidence: [], next_actions: [], findings: [],
+    product_assessment: {purpose_fit:'Fit', strengths:[], opportunities:[], reuse_or_simplify:[]},
+    complexity_assessment: {status:'CLEAR', summary:'Clear.', items:[]},
+    decision_control: {gate_context:{current_gate:null,gate_question:null,pass_criteria:[]}, evidence_ceiling:'SOURCE_REVIEW_STILL_USEFUL', audit_loop_risk:'UNKNOWN', blocking_finding_ids:[], deferred_finding_ids:[], primary_next_action:{title:'Review the project.',substeps:[]}},
+    ...overrides,
+  };
+  return {report, evidenceId};
+}
 
 test('requires one repo source',()=> {assert.throws(()=>parseArgs([]),/exactly one/);assert.throws(()=>parseArgs(['--repo','https://github.com/a/b','--path','.']),/exactly one/);});
 test('supports exact HTTPS github repo',()=>assert.equal(normalizeGithub('https://github.com/isudally/playkin'), 'https://github.com/isudally/playkin.git'));
@@ -136,7 +149,7 @@ test('new reports require complexity, finding materiality and decision controls'
   const registry=createEvidenceRegistry({source:'fixture',commit:'abc'});
   const id=captureEvidence(registry,{type:'source',action:'source_read',location:'app.mjs',content_hash:'sha256:test',content:'evidence',outcome:'retrieved'});
   const finding={id:'F-001',title:'Risk',severity:'HIGH',evidence_type:'OBSERVED',evidence:'Observed risk.',location:'app.mjs:1',recommended_fix:'Make the invariant true.',materiality:'BLOCKER',invariant:'Required behavior holds.',consequence:'Users are affected.',smallest_correction:'Fix the narrow path.',evidence_ids:[id]};
-  const report={...sample,commit:'abc',runtime_status:'NOT RUN',runtime_evidence:[],next_actions:[],findings:[finding],product_assessment:{purpose_fit:'Fit',strengths:[],opportunities:[],reuse_or_simplify:[]},complexity_assessment:{status:'CHALLENGE',summary:'A narrow risk is present.',items:[]},decision_control:{gate_context:{current_gate:null,gate_question:null,pass_criteria:[]},evidence_ceiling:'SOURCE_REVIEW_STILL_USEFUL',audit_loop_risk:'UNKNOWN',blocking_finding_ids:['F-001'],deferred_finding_ids:[],primary_next_action:{title:'Fix the invariant.',substeps:[]}}};
+  const report={...sample,viability_assessment:{...sample.viability_assessment,next_validation:{title:'Fix the invariant.',substeps:[]}},commit:'abc',runtime_status:'NOT RUN',runtime_evidence:[],next_actions:[],findings:[finding],product_assessment:{purpose_fit:'Fit',strengths:[],opportunities:[],reuse_or_simplify:[]},complexity_assessment:{status:'CHALLENGE',summary:'A narrow risk is present.',items:[]},decision_control:{gate_context:{current_gate:null,gate_question:null,pass_criteria:[]},evidence_ceiling:'SOURCE_REVIEW_STILL_USEFUL',audit_loop_risk:'UNKNOWN',blocking_finding_ids:['F-001'],deferred_finding_ids:[],primary_next_action:{title:'Fix the invariant.',substeps:[]}}};
   assert.doesNotThrow(()=>validateReport(report,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}));
   const {complexity_assessment: _missingComplexity, ...withoutComplexity}=report;
   void _missingComplexity;
@@ -145,11 +158,70 @@ test('new reports require complexity, finding materiality and decision controls'
   assert.throws(()=>validateReport({...report,decision_control:{...report.decision_control,deferred_finding_ids:['F-001']}},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}),/BLOCKER F-001/);
   assert.throws(()=>validateReport({...report,findings:[{...finding,materiality:'MATERIAL'}],complexity_assessment:{...report.complexity_assessment,status:'BLOCK'},verdict:'CONTINUE'},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}),/Complexity BLOCK/);
 });
+test('value status can veto technical continuation',()=>{
+  const registry=createEvidenceRegistry({source:'fixture',commit:'abc'});
+  const {report,evidenceId}=strictReport(registry,{viability_assessment:{...sample.viability_assessment,status:'KILL',evidence_against_value:[{claim:'No current need.',evidence_ids:[]}],would_start_today:'NO',next_validation:null}});
+  report.viability_assessment.evidence_against_value[0].evidence_ids=[evidenceId];
+  assert.throws(()=>validateReport({...report,verdict:'CONTINUE'},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}),/Viability KILL requires overall STOP/);
+  assert.doesNotThrow(()=>validateReport({...report,verdict:'STOP'},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}));
+});
+test('value and technical stop rules reject unsupported continuation',()=>{
+  const registry=createEvidenceRegistry({source:'fixture',commit:'abc'});
+  for (const status of ['CHALLENGED','UNPROVEN']) {
+    const validation={title:'Run the cheapest validation.',substeps:['Measure one real workflow.']};
+    const {report,evidenceId}=strictReport(registry,{verdict:'CONTINUE',viability_assessment:{...sample.viability_assessment,status,next_validation:validation},decision_control:{...strictReport(registry).report.decision_control,primary_next_action:validation}});
+    if (status === 'CHALLENGED') report.viability_assessment.evidence_against_value=[{claim:'The current value case is challenged.',evidence_ids:[evidenceId]}];
+    assert.throws(()=>validateReport(report,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}),/Overall CONTINUE|Viability (CHALLENGED|UNPROVEN) cannot coexist with CONTINUE/);
+  }
+  const {report,evidenceId}=strictReport(registry,{verdict:'CONTINUE',technical_verdict:'STOP',viability_assessment:{...sample.viability_assessment,status:'PROVEN',next_validation:null,evidence_for_value:[{claim:'Observed internal value.',evidence_ids:[]} ]}});
+  report.viability_assessment.evidence_for_value[0].evidence_ids=[evidenceId];
+  assert.throws(()=>validateReport(report,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}),/Technical STOP requires overall STOP/);
+});
+test('value validation requires evidence for PROVEN and keeps next validation authoritative',()=>{
+  const registry=createEvidenceRegistry({source:'fixture',commit:'abc'});
+  const {report,evidenceId}=strictReport(registry);
+  report.verdict='MODIFY';
+  report.viability_assessment={...sample.viability_assessment,status:'PROVEN',evidence_for_value:[{claim:'Repeated internal use is observed.',evidence_ids:[evidenceId]}],next_validation:null};
+  assert.doesNotThrow(()=>validateReport(report,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}));
+  const {report: missing}=strictReport(registry,{viability_assessment:{...sample.viability_assessment,status:'PROVEN',next_validation:null}});
+  assert.throws(()=>validateReport(missing,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}),/viability status PROVEN requires supporting evidence/);
+  const validation={title:'Run one validation.',substeps:['Measure one workflow.']};
+  const {report: unproven}=strictReport(registry,{viability_assessment:{...sample.viability_assessment,status:'UNPROVEN',next_validation:validation}});
+  assert.throws(()=>validateReport(unproven,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}),/next_validation must match/);
+});
+test('prior KILL requires an evidence-backed override, without claiming novelty',()=>{
+  const registry=createEvidenceRegistry({source:'fixture',commit:'abc'});
+  const {report,evidenceId}=strictReport(registry,{viability_assessment:{...sample.viability_assessment,status:'PLAUSIBLE',next_validation:null,override:null}});
+  const history={previous_report:{viability_assessment:{...sample.viability_assessment,status:'KILL',next_validation:null,evidence_against_value:[{claim:'Old evidence',evidence_ids:[evidenceId]} ]}}};
+  assert.throws(()=>validateReport(report,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true,trustedHistory:history}),/evidence-backed override/);
+  const overridden={...report,viability_assessment:{...report.viability_assessment,override:{previous_status:'KILL',evidence_ids:[evidenceId],rationale:'Current controller evidence changes the conclusion.'},evidence_for_value:[{claim:'Observed use.',evidence_ids:[evidenceId]}]}};
+  assert.doesNotThrow(()=>validateReport(overridden,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true,trustedHistory:history}));
+});
+test('strict continuation requires affirmative eligible value evidence',()=>{
+  const registry=createEvidenceRegistry({source:'fixture',commit:'abc'});
+  const {report,evidenceId}=strictReport(registry,{verdict:'CONTINUE',technical_verdict:'CONTINUE',viability_assessment:{...sample.viability_assessment,status:'PLAUSIBLE',would_start_today:'YES_BUT_SMALLER',next_validation:null}});
+  assert.throws(()=>validateReport(report,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}),/Overall CONTINUE requires affirmative eligible value evidence/);
+  const supported={...report,viability_assessment:{...report.viability_assessment,evidence_for_value:[{claim:'Repeated internal use is observed.',evidence_ids:[evidenceId]}]}};
+  assert.doesNotThrow(()=>validateReport(supported,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}));
+});
+test('strict UNKNOWN requires validation before continuation',()=>{
+  const registry=createEvidenceRegistry({source:'fixture',commit:'abc'});
+  const validation={title:'Measure one real workflow.',substeps:[]};
+  const {report}=strictReport(registry,{verdict:'CONTINUE',technical_verdict:'CONTINUE',viability_assessment:{...sample.viability_assessment,status:'UNKNOWN',next_validation:validation},decision_control:{...strictReport(registry).report.decision_control,primary_next_action:validation}});
+  assert.throws(()=>validateReport(report,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}),/Overall CONTINUE requires affirmative eligible value evidence|Viability UNKNOWN cannot coexist with CONTINUE/);
+  const bounded={...report,verdict:'MODIFY',technical_verdict:'MODIFY'};
+  assert.doesNotThrow(()=>validateReport(bounded,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}));
+});
+test('affirmative start-today claims require value evidence',()=>{
+  const registry=createEvidenceRegistry({source:'fixture',commit:'abc'});
+  const {report}=strictReport(registry,{viability_assessment:{...sample.viability_assessment,status:'PLAUSIBLE',would_start_today:'YES',next_validation:null}});
+  assert.throws(()=>validateReport(report,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}),/Affirmative would_start_today requires eligible value evidence/);
+});
 test('strict reports have one authoritative next-action channel',()=>{
   const registry=createEvidenceRegistry({source:'fixture',commit:'abc'});
   const id=captureEvidence(registry,{type:'source',action:'source_read',location:'app.mjs',content_hash:'sha256:test',content:'evidence',outcome:'retrieved'});
   const finding={id:'F-001',title:'Risk',severity:'HIGH',evidence_type:'OBSERVED',evidence:'Observed risk.',location:'app.mjs:1',recommended_fix:'Fix the invariant.',materiality:'MATERIAL',invariant:'Required behavior holds.',consequence:'Users are affected.',smallest_correction:'Fix the narrow path.',evidence_ids:[id]};
-  const report={...sample,commit:'abc',runtime_status:'NOT RUN',runtime_evidence:[],next_actions:[],findings:[finding],product_assessment:{purpose_fit:'Fit',strengths:[],opportunities:[],reuse_or_simplify:[]},complexity_assessment:{status:'CLEAR',summary:'No extra architecture is evidenced.',items:[]},decision_control:{gate_context:{current_gate:'F1',gate_question:'Does it pass?',pass_criteria:['Proof']},evidence_ceiling:'MOVE_TO_LIVE_PROOF',audit_loop_risk:'UNKNOWN',blocking_finding_ids:[],deferred_finding_ids:[],primary_next_action:{title:'Run the live proof.',substeps:[]}}};
+  const report={...sample,viability_assessment:{...sample.viability_assessment,next_validation:{title:'Run the live proof.',substeps:[]}},commit:'abc',runtime_status:'NOT RUN',runtime_evidence:[],next_actions:[],findings:[finding],product_assessment:{purpose_fit:'Fit',strengths:[],opportunities:[],reuse_or_simplify:[]},complexity_assessment:{status:'CLEAR',summary:'No extra architecture is evidenced.',items:[]},decision_control:{gate_context:{current_gate:'F1',gate_question:'Does it pass?',pass_criteria:['Proof']},evidence_ceiling:'MOVE_TO_LIVE_PROOF',audit_loop_risk:'UNKNOWN',blocking_finding_ids:[],deferred_finding_ids:[],primary_next_action:{title:'Run the live proof.',substeps:[]}}};
   assert.doesNotThrow(()=>validateReport(report,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true,trustedGateContext:report.decision_control.gate_context}));
   assert.throws(()=>validateReport({...report,next_actions:['Run another broad source audit']},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true,trustedGateContext:report.decision_control.gate_context}),/only next-action channel/);
 });
@@ -157,7 +229,7 @@ test('materiality must match blocking and deferred references',()=>{
   const registry=createEvidenceRegistry({source:'fixture',commit:'abc'});
   const id=captureEvidence(registry,{type:'source',action:'source_read',location:'app.mjs',content_hash:'sha256:test',content:'evidence',outcome:'retrieved'});
   const finding={id:'F-001',title:'Risk',severity:'HIGH',evidence_type:'OBSERVED',evidence:'Observed risk.',location:'app.mjs:1',recommended_fix:'Fix it.',materiality:'BLOCKER',invariant:'Invariant.',consequence:'Consequence.',smallest_correction:'Correction.',evidence_ids:[id]};
-  const base={...sample,commit:'abc',runtime_status:'NOT RUN',runtime_evidence:[],next_actions:[],findings:[finding],product_assessment:{purpose_fit:'Fit',strengths:[],opportunities:[],reuse_or_simplify:[]},complexity_assessment:{status:'CLEAR',summary:'Clear.',items:[]},decision_control:{gate_context:{current_gate:null,gate_question:null,pass_criteria:[]},evidence_ceiling:'SOURCE_REVIEW_STILL_USEFUL',audit_loop_risk:'UNKNOWN',blocking_finding_ids:['F-001'],deferred_finding_ids:[],primary_next_action:{title:'Fix it.',substeps:[]}}};
+  const base={...sample,viability_assessment:{...sample.viability_assessment,next_validation:{title:'Fix it.',substeps:[]}},commit:'abc',runtime_status:'NOT RUN',runtime_evidence:[],next_actions:[],findings:[finding],product_assessment:{purpose_fit:'Fit',strengths:[],opportunities:[],reuse_or_simplify:[]},complexity_assessment:{status:'CLEAR',summary:'Clear.',items:[]},decision_control:{gate_context:{current_gate:null,gate_question:null,pass_criteria:[]},evidence_ceiling:'SOURCE_REVIEW_STILL_USEFUL',audit_loop_risk:'UNKNOWN',blocking_finding_ids:['F-001'],deferred_finding_ids:[],primary_next_action:{title:'Fix it.',substeps:[]}}};
   assert.throws(()=>validateReport({...base,verdict:'CONTINUE'},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}),/BLOCKER findings/);
   assert.throws(()=>validateReport({...base,findings:[{...finding,materiality:'DEFER'}]},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}),/DEFER F-001/);
   assert.throws(()=>validateReport({...base,findings:[{...finding,materiality:'INFORMATIONAL'}]},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}),/INFORMATIONAL F-001/);
@@ -167,7 +239,7 @@ test('materiality must match blocking and deferred references',()=>{
 test('complexity claims require eligible controller evidence',()=>{
   const registry=createEvidenceRegistry({source:'fixture',commit:'abc'});
   const sourceId=captureEvidence(registry,{type:'source',action:'source_read',location:'app.mjs',content_hash:'sha256:test',content:'evidence',outcome:'retrieved'});
-  const base={...sample,commit:'abc',runtime_status:'NOT RUN',runtime_evidence:[],next_actions:[],findings:[],product_assessment:{purpose_fit:'Fit',strengths:[],opportunities:[],reuse_or_simplify:[]},complexity_assessment:{status:'CHALLENGE',summary:'A narrow concern.',items:[{trigger:'A request adds burden.',requirement:'Keep the path bounded.',why_now:'The gate is narrow.',existing_alternative:'Existing helper.',burden:'Small.',minimum_sufficient_path:'Use the helper.',evidence_ids:[sourceId]}]},decision_control:{gate_context:{current_gate:null,gate_question:null,pass_criteria:[]},evidence_ceiling:'SOURCE_REVIEW_STILL_USEFUL',audit_loop_risk:'UNKNOWN',blocking_finding_ids:[],deferred_finding_ids:[],primary_next_action:{title:'Review the helper.',substeps:[]}}};
+  const base={...sample,viability_assessment:{...sample.viability_assessment,next_validation:{title:'Review the helper.',substeps:[]}},commit:'abc',runtime_status:'NOT RUN',runtime_evidence:[],next_actions:[],findings:[],product_assessment:{purpose_fit:'Fit',strengths:[],opportunities:[],reuse_or_simplify:[]},complexity_assessment:{status:'CHALLENGE',summary:'A narrow concern.',items:[{trigger:'A request adds burden.',requirement:'Keep the path bounded.',why_now:'The gate is narrow.',existing_alternative:'Existing helper.',burden:'Small.',minimum_sufficient_path:'Use the helper.',evidence_ids:[sourceId]}]},decision_control:{gate_context:{current_gate:null,gate_question:null,pass_criteria:[]},evidence_ceiling:'SOURCE_REVIEW_STILL_USEFUL',audit_loop_risk:'UNKNOWN',blocking_finding_ids:[],deferred_finding_ids:[],primary_next_action:{title:'Review the helper.',substeps:[]}}};
   assert.doesNotThrow(()=>validateReport(base,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}));
   for (const type of ['model_request','imported_external']) {
     const id=captureEvidence(registry,{type,action:'untrusted',outcome:'received'});
@@ -178,6 +250,8 @@ test('legacy reports render with safe UNKNOWN controls',()=>{
   const md=renderMarkdown(sample,{source:'repo',mode:'inspect',timestamp:'now'});
   assert.match(md,/Complexity gate: \*\*UNKNOWN\*\*/);
   assert.match(md,/Audit-loop risk: \*\*UNKNOWN\*\*/);
+  const legacyOverride=renderMarkdown({...sample,viability_assessment:{...sample.viability_assessment,status:'PLAUSIBLE',next_validation:null,override:{previous_status:'KILL',new_evidence_ids:['ev-0000000000000000'],rationale:'Legacy override.'}}},{source:'repo',mode:'inspect',timestamp:'now'});
+  assert.match(legacyOverride,/Legacy override/);
 });
 test('audit history is controller-bound rather than self-asserted',()=>{
   assert.throws(()=>validateAuditHistory({validated:true,previous_commit:'abc'}),/cannot self-assert/);

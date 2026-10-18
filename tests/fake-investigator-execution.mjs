@@ -14,7 +14,7 @@ if (schema.endsWith('investigation-request.schema.json')) {
     : { action: 'final', rationale: 'The controller result is available.', requests: [] }));
 } else {
   writeFileSync(output, JSON.stringify({
-    project: 'model-project', commit: 'model-commit', verdict: 'CONTINUE', executive_summary: 'The model returned a contradictory runtime classification.',
+    project: 'model-project', commit: 'model-commit', verdict: 'INCONCLUSIVE', technical_verdict: 'INCONCLUSIVE', viability_assessment:{project_type:'UNKNOWN',status:'UNKNOWN',problem:'Fixture only.',beneficiary:'Fixture test',evidence_for_value:[],evidence_against_value:[],substitutes:[],unique_value:'Fixture only.',proof_gap:'No value assessment.',strongest_stop_case:'Fixture only.',strongest_continue_case:'Fixture only.',would_start_today:'UNKNOWN',next_validation:{title:'Review the executed check.',substeps:[]},override:null}, executive_summary: 'The model returned a contradictory runtime classification.',
     runtime_status: 'NOT RUN', runtime_evidence: [],
     findings: [{ id:'F-001', title: 'Controller executed build', severity: 'INFO', evidence_type: 'OBSERVED', evidence: 'The controller supplied execution evidence.', location: 'app.mjs:1', recommended_fix: 'None.', materiality:'INFORMATIONAL', invariant:'The controller records the configured build.', consequence:'No defect established.', smallest_correction:'None.', evidence_ids: [ids[0]] }],
     product_assessment:{purpose_fit:'Fixture',strengths:[],opportunities:[],reuse_or_simplify:[]},

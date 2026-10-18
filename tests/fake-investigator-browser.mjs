@@ -14,7 +14,7 @@ if (schema.endsWith('investigation-request.schema.json')) {
     : { action: 'final', rationale: 'The controller browser result is available.', requests: [] }));
 } else {
   writeFileSync(output, JSON.stringify({
-    project: 'model-project', commit: 'model-commit', verdict: 'CONTINUE', executive_summary: 'The model report is reconciled against controller browser evidence.',
+    project: 'model-project', commit: 'model-commit', verdict: 'INCONCLUSIVE', technical_verdict: 'INCONCLUSIVE', viability_assessment:{project_type:'UNKNOWN',status:'UNKNOWN',problem:'Fixture only.',beneficiary:'Fixture test',evidence_for_value:[],evidence_against_value:[],substitutes:[],unique_value:'Fixture only.',proof_gap:'No value assessment.',strongest_stop_case:'Fixture only.',strongest_continue_case:'Fixture only.',would_start_today:'UNKNOWN',next_validation:{title:'Review the browser assertion.',substeps:[]},override:null}, executive_summary: 'The model report is reconciled against controller browser evidence.',
     runtime_status: 'PASS', runtime_evidence: [],
     findings: [], product_assessment:{purpose_fit:'Fixture',strengths:[],opportunities:[],reuse_or_simplify:[]}, complexity_assessment:{status:'CLEAR',summary:'No additional architecture is evidenced.',items:[]}, decision_control:{gate_context:{current_gate:null,gate_question:null,pass_criteria:[]},evidence_ceiling:'MOVE_TO_CONTROLLED_RUNTIME',audit_loop_risk:'UNKNOWN',blocking_finding_ids:[],deferred_finding_ids:[],primary_next_action:{title:'Review the browser assertion.',substeps:[]}}, proposed_patch: null, reuse_assessment: [], commercial_risks: [], unverified: [], next_actions: [],
   }));

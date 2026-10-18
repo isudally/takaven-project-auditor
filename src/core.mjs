@@ -68,6 +68,13 @@ export function validateBriefProvenance(value) {
   return value;
 }
 
+const TECHNICAL_VERDICTS = new Set(['CONTINUE', 'MODIFY', 'STOP', 'INCONCLUSIVE']);
+const VALUE_PROJECT_TYPES = new Set(['COMMERCIAL_PRODUCT', 'INTERNAL_TOOL', 'PERSONAL_TOOL', 'MANDATED_DELIVERY', 'UNKNOWN']);
+const VALUE_STATUSES = new Set(['PROVEN', 'PLAUSIBLE', 'UNPROVEN', 'CHALLENGED', 'KILL', 'UNKNOWN']);
+const START_TODAY_VALUES = new Set(['YES', 'YES_BUT_SMALLER', 'NOT_YET', 'NO', 'UNKNOWN']);
+const VALUE_VALIDATION_STATUSES = new Set(['UNPROVEN', 'CHALLENGED', 'UNKNOWN']);
+const VALUE_STATUS_STRENGTH = { KILL: 0, CHALLENGED: 1, UNPROVEN: 2, UNKNOWN: 2, PLAUSIBLE: 3, PROVEN: 4 };
+
 export function readProjectBrief(path) {
   let value;
   try { value = JSON.parse(readFileSync(path, 'utf8')); } catch { throw new Error('Project brief must contain valid JSON'); }
@@ -188,6 +195,35 @@ function renderCoverage(coverage) {
   return lines;
 }
 
+function renderViability(assessment) {
+  const value = assessment ?? {
+    project_type: 'UNKNOWN', status: 'UNKNOWN', problem: 'Not assessed in this legacy report.', beneficiary: 'UNKNOWN',
+    evidence_for_value: [], evidence_against_value: [], substitutes: [], unique_value: 'UNKNOWN', proof_gap: 'Run a current viability assessment.',
+    strongest_stop_case: 'UNKNOWN', strongest_continue_case: 'UNKNOWN', would_start_today: 'UNKNOWN', next_validation: null, override: null,
+  };
+  const overrideEvidenceIds = value.override?.evidence_ids ?? value.override?.new_evidence_ids ?? [];
+  const claims = items => items?.length ? items.map(item => `- ${escapeNarrative(item.claim)}${item.evidence_ids?.length ? ` (${escapeMd(item.evidence_ids.join(', '))})` : ''}`) : ['- None evidenced.'];
+  const substitutes = value.substitutes?.length ? value.substitutes.map(item => `- **${escapeMd(item.name)}** — ${escapeNarrative(item.assessment)}${item.evidence_ids?.length ? ` (${escapeMd(item.evidence_ids.join(', '))})` : ''}`) : ['- None assessed.'];
+  return [
+    '## Viability / value gate', '',
+    `- Project type: **${escapeMd(value.project_type)}**`,
+    `- Value status: **${escapeMd(value.status)}**`,
+    `- Would we start this today?: **${escapeMd(value.would_start_today)}**`,
+    `- Problem: ${escapeNarrative(value.problem)}`,
+    `- Beneficiary: ${escapeNarrative(value.beneficiary)}`,
+    `- Unique value: ${escapeNarrative(value.unique_value)}`,
+    '', '**Evidence for value**', '', ...claims(value.evidence_for_value),
+    '', '**Evidence against value**', '', ...claims(value.evidence_against_value),
+    '', '**Substitute / reuse challenge**', '', ...substitutes,
+    '', `- Strongest stop case: ${escapeNarrative(value.strongest_stop_case)}`,
+    `- Strongest continue case: ${escapeNarrative(value.strongest_continue_case)}`,
+    `- Proof gap: ${escapeNarrative(value.proof_gap)}`,
+    ...(value.next_validation ? ['', `- Next validation: **${escapeMd(value.next_validation.title)}**`, ...(value.next_validation.substeps ?? []).map(step => `  - ${escapeNarrative(step)}`)] : []),
+    ...(value.override ? ['', `- Evidence-backed override: ${escapeNarrative(value.override.rationale)} (${escapeMd(overrideEvidenceIds.join(', '))})`] : []),
+    '',
+  ];
+}
+
 export function renderMarkdown(report, context) {
   const assessment = report.product_assessment ?? { purpose_fit: 'UNKNOWN: no structured product assessment was supplied.', strengths: [], opportunities: [], reuse_or_simplify: [] };
   const complexity = report.complexity_assessment ?? { status: 'UNKNOWN', summary: 'Legacy report predates complexity assessment.', items: [] };
@@ -197,13 +233,14 @@ export function renderMarkdown(report, context) {
   const out = [
     `# TAKAVEN Project Auditor — ${escapeMd(report.project)}`,
     '',
-    `**Verdict:** ${escapeMd(report.verdict)} | **Runtime:** ${escapeMd(report.runtime_status)} | **Commit:** ${escapeMd(report.commit)}`,
+    `**Overall verdict:** ${escapeMd(report.verdict)} | **Technical:** ${escapeMd(report.technical_verdict ?? report.verdict)} | **Value:** ${escapeMd(report.viability_assessment?.status ?? 'UNKNOWN')} | **Runtime:** ${escapeMd(report.runtime_status)} | **Commit:** ${escapeMd(report.commit)}`,
     '',
     `**Source:** ${escapeMd(context.source)}  `,
     `**Mode:** ${escapeMd(report.audit_mode ?? context.mode)}  `,
     `**Brief provenance:** ${escapeMd(context.briefProvenance ?? 'unspecified')}  `,
     `**Audited at:** ${escapeMd(context.timestamp)}`,
     '',
+    ...renderViability(report.viability_assessment),
     '## Decision control','',
     `- Complexity gate: **${escapeMd(complexity.status)}** — ${escapeNarrative(complexity.summary)}`,
     `- Current trusted gate: ${escapeMd(gate.current_gate ?? 'UNKNOWN')}`,
@@ -243,13 +280,82 @@ export function validateReport(value, options = {}) {
   return validateReportWithOptions(value, options);
 }
 
+function validateViabilityClaims(items, field, evidenceRegistry, requireEvidenceIds) {
+  if (!Array.isArray(items)) throw new Error(`${field} must be an array`);
+  items.forEach((item, index) => {
+    requireObject(item, `${field}[${index}]`);
+    requireExactKeys(item, ['claim', 'evidence_ids'], `${field}[${index}]`);
+    requireString(item.claim, `${field}[${index}].claim`);
+    if (!Array.isArray(item.evidence_ids)) throw new Error(`${field}[${index}].evidence_ids must be an array`);
+    validateEvidenceIds(item.evidence_ids, evidenceRegistry, `${field}[${index}].evidence_ids`);
+    if (requireEvidenceIds && item.evidence_ids.length > 0 && !item.evidence_ids.every(id => isEligibleFindingEvidence(evidenceRegistry, id))) {
+      throw new Error(`${field}[${index}] is not backed by eligible controller evidence`);
+    }
+  });
+}
+
+function validateViabilityAssessment(value, { evidenceRegistry, requireEvidenceIds, trustedHistory } = {}) {
+  requireObject(value, 'viability_assessment');
+  requireExactKeys(value, [
+    'project_type', 'status', 'problem', 'beneficiary', 'evidence_for_value',
+    'evidence_against_value', 'substitutes', 'unique_value', 'proof_gap',
+    'strongest_stop_case', 'strongest_continue_case', 'would_start_today',
+    'next_validation', 'override',
+  ], 'viability_assessment');
+  if (!VALUE_PROJECT_TYPES.has(value.project_type)) throw new Error('Invalid viability project_type');
+  if (!VALUE_STATUSES.has(value.status)) throw new Error('Invalid viability status');
+  if (!START_TODAY_VALUES.has(value.would_start_today)) throw new Error('Invalid viability would_start_today');
+  for (const field of ['problem', 'beneficiary', 'unique_value', 'proof_gap', 'strongest_stop_case', 'strongest_continue_case']) requireString(value[field], `viability_assessment.${field}`);
+  validateViabilityClaims(value.evidence_for_value, 'viability_assessment.evidence_for_value', evidenceRegistry, requireEvidenceIds);
+  validateViabilityClaims(value.evidence_against_value, 'viability_assessment.evidence_against_value', evidenceRegistry, requireEvidenceIds);
+  if (!Array.isArray(value.substitutes)) throw new Error('viability_assessment.substitutes must be an array');
+  value.substitutes.forEach((item, index) => {
+    requireObject(item, `viability_assessment.substitutes[${index}]`);
+    requireExactKeys(item, ['name', 'assessment', 'evidence_ids'], `viability_assessment.substitutes[${index}]`);
+    requireString(item.name, `viability_assessment.substitutes[${index}].name`);
+    requireString(item.assessment, `viability_assessment.substitutes[${index}].assessment`);
+    if (!Array.isArray(item.evidence_ids)) throw new Error(`viability_assessment.substitutes[${index}].evidence_ids must be an array`);
+    validateEvidenceIds(item.evidence_ids, evidenceRegistry, `viability_assessment.substitutes[${index}].evidence_ids`);
+    if (requireEvidenceIds && item.evidence_ids.length > 0 && !item.evidence_ids.every(id => isEligibleFindingEvidence(evidenceRegistry, id))) throw new Error(`viability_assessment.substitutes[${index}] is not backed by eligible controller evidence`);
+  });
+  if (value.next_validation !== null) {
+    requireObject(value.next_validation, 'viability_assessment.next_validation');
+    requireExactKeys(value.next_validation, ['title', 'substeps'], 'viability_assessment.next_validation');
+    requireString(value.next_validation.title, 'viability_assessment.next_validation.title');
+    if (!Array.isArray(value.next_validation.substeps) || value.next_validation.substeps.some(item => typeof item !== 'string')) throw new Error('viability_assessment.next_validation.substeps must be strings');
+  }
+  if (value.override !== null) {
+    requireObject(value.override, 'viability_assessment.override');
+    requireExactKeys(value.override, ['previous_status', 'evidence_ids', 'rationale'], 'viability_assessment.override');
+    if (!VALUE_STATUSES.has(value.override.previous_status)) throw new Error('Invalid viability override.previous_status');
+    if (!Array.isArray(value.override.evidence_ids) || value.override.evidence_ids.length === 0) throw new Error('viability_assessment.override.evidence_ids must contain evidence IDs');
+    validateEvidenceIds(value.override.evidence_ids, evidenceRegistry, 'viability_assessment.override.evidence_ids');
+    if (requireEvidenceIds && !value.override.evidence_ids.every(id => isEligibleFindingEvidence(evidenceRegistry, id))) throw new Error('viability_assessment.override requires eligible controller evidence');
+    requireString(value.override.rationale, 'viability_assessment.override.rationale');
+  }
+
+  const requiresValidation = VALUE_VALIDATION_STATUSES.has(value.status);
+  if (requiresValidation && value.next_validation === null) throw new Error(`viability status ${value.status} requires next_validation`);
+  if (!requiresValidation && value.next_validation !== null) throw new Error(`viability status ${value.status} must not provide next_validation`);
+  if (['PROVEN', 'CHALLENGED', 'KILL'].includes(value.status)) {
+    const supporting = value.status === 'PROVEN' ? value.evidence_for_value : value.evidence_against_value;
+    if (!supporting.some(item => item.evidence_ids.length > 0)) throw new Error(`viability status ${value.status} requires supporting evidence`);
+  }
+  const previous = trustedHistory?.previous_report?.viability_assessment;
+  if (previous && ['KILL', 'CHALLENGED'].includes(previous.status) && VALUE_STATUS_STRENGTH[value.status] > VALUE_STATUS_STRENGTH[previous.status]) {
+    if (!value.override || value.override.previous_status !== previous.status) throw new Error('Improving a prior viability decision requires an evidence-backed override');
+  }
+  return value;
+}
+
 export function validateReportWithOptions(value, { mode, evidenceRegistry, requireEvidenceIds = false, requireDecisionControls = false, trustedGateContext = null, trustedHistory = null } = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid report JSON');
 
   const required = ['project', 'commit', 'verdict', 'executive_summary', 'runtime_status', 'runtime_evidence', 'findings', 'reuse_assessment', 'commercial_risks', 'unverified', 'next_actions'];
   const controlFields = ['complexity_assessment', 'decision_control'];
-  if (requireDecisionControls) required.push(...controlFields);
-  const allowed = new Set([...required, ...controlFields, 'product_assessment', 'audit_mode', 'source', 'audited_at', 'coverage', 'proposed_patch']);
+  const viabilityFields = ['technical_verdict', 'viability_assessment'];
+  if (requireDecisionControls) required.push(...controlFields, ...viabilityFields);
+  const allowed = new Set([...required, ...controlFields, ...viabilityFields, 'product_assessment', 'audit_mode', 'source', 'audited_at', 'coverage', 'proposed_patch']);
   for (const field of required) if (!(field in value)) throw new Error(`Missing report field: ${field}`);
   if (requireDecisionControls && !('product_assessment' in value)) throw new Error('Missing report field: product_assessment');
   for (const field of Object.keys(value)) if (!allowed.has(field)) throw new Error(`Unexpected report field: ${field}`);
@@ -264,6 +370,10 @@ export function validateReportWithOptions(value, { mode, evidenceRegistry, requi
   if (value.audited_at !== undefined) requireString(value.audited_at, 'audited_at');
   if (value.coverage !== undefined) requireObject(value.coverage, 'coverage');
   if (value.proposed_patch !== undefined && value.proposed_patch !== null) requireString(value.proposed_patch, 'proposed_patch');
+  if (value.technical_verdict !== undefined) {
+    if (!TECHNICAL_VERDICTS.has(value.technical_verdict)) throw new Error('Invalid technical verdict');
+  }
+  if (requireDecisionControls) validateViabilityAssessment(value.viability_assessment, { evidenceRegistry, requireEvidenceIds, trustedHistory });
 
   if (!Array.isArray(value.runtime_evidence)) throw new Error('runtime_evidence must be an array');
   value.runtime_evidence.forEach((entry, index) => {
@@ -391,6 +501,19 @@ function validateDecisionControls(value, { evidenceRegistry, requireEvidenceIds,
   if (controls.blocking_finding_ids.some(id => value.findings.find(finding => finding.id === id)?.materiality === 'BLOCKER') && value.verdict === 'CONTINUE') throw new Error('BLOCKER findings cannot coexist with CONTINUE');
   if (value.verdict === 'STOP' && controls.blocking_finding_ids.length === 0 && controls.deferred_finding_ids.length > 0) throw new Error('DEFER findings cannot be the sole reason to stop a gate');
   if (complexity.status === 'BLOCK' && value.verdict === 'CONTINUE') throw new Error('Complexity BLOCK cannot coexist with an unqualified CONTINUE verdict');
+  const viability = value.viability_assessment;
+  if (viability.status === 'KILL' && value.verdict !== 'STOP') throw new Error('Viability KILL requires overall STOP');
+  if (viability.would_start_today === 'NO' && value.verdict !== 'STOP') throw new Error('would_start_today NO requires overall STOP');
+  if (viability.status === 'CHALLENGED' && value.verdict === 'CONTINUE') throw new Error('Viability CHALLENGED cannot coexist with CONTINUE');
+  if (viability.status === 'UNPROVEN' && value.verdict === 'CONTINUE') throw new Error('Viability UNPROVEN cannot coexist with CONTINUE');
+  if (viability.status === 'UNKNOWN' && value.verdict === 'CONTINUE') throw new Error('Viability UNKNOWN cannot coexist with CONTINUE');
+  const affirmativeValueEvidence = viability.evidence_for_value.some(item => item.evidence_ids.length > 0);
+  if (value.verdict === 'CONTINUE' && !affirmativeValueEvidence) throw new Error('Overall CONTINUE requires affirmative eligible value evidence');
+  if (requireEvidenceIds && ['YES', 'YES_BUT_SMALLER'].includes(viability.would_start_today) && !affirmativeValueEvidence) throw new Error('Affirmative would_start_today requires eligible value evidence');
+  if (value.technical_verdict === 'STOP' && value.verdict !== 'STOP') throw new Error('Technical STOP requires overall STOP');
+  if (VALUE_VALIDATION_STATUSES.has(viability.status)) {
+    if (JSON.stringify(viability.next_validation) !== JSON.stringify(controls.primary_next_action)) throw new Error('viability next_validation must match decision_control.primary_next_action');
+  }
   const actionText = `${controls.primary_next_action.title} ${controls.primary_next_action.substeps.join(' ')}`.toLowerCase();
   if (['MOVE_TO_CONTROLLED_RUNTIME', 'MOVE_TO_LIVE_PROOF'].includes(controls.evidence_ceiling) && /broad|full\s+source|another\s+source\s+audit|re-?audit/.test(actionText)) throw new Error('Runtime/live evidence ceiling is incompatible with another broad source audit');
   if (!trustedHistory && controls.audit_loop_risk !== 'UNKNOWN') throw new Error('Audit-loop risk requires controller-validated history');
