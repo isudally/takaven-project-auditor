@@ -14,7 +14,7 @@ if (schema.endsWith('investigation-request.schema.json')) {
 } else {
   if (ids.length === 0) throw new Error('No controller evidence ID was supplied');
   writeFileSync(output, JSON.stringify({
-    project: 'fake', commit: 'model-commit', verdict: 'CONTINUE', executive_summary: 'Investigation completed.',
+    project: 'fake', commit: 'model-commit', verdict: 'CONTINUE', technical_verdict: 'CONTINUE', viability_assessment:{project_type:'UNKNOWN',status:'PLAUSIBLE',problem:'Fixture only.',beneficiary:'Fixture test',evidence_for_value:[],evidence_against_value:[],substitutes:[],unique_value:'Fixture only.',proof_gap:'No value assessment.',strongest_stop_case:'Fixture only.',strongest_continue_case:'Fixture only.',would_start_today:'UNKNOWN',next_validation:null,override:null}, executive_summary: 'Investigation completed.',
     runtime_status: 'NOT RUN', runtime_evidence: [],
     findings: [{ id:'F-001', title: 'Observed source', severity: 'INFO', evidence_type: 'OBSERVED', evidence: 'The source was retrieved by the controller.', location: 'app.mjs:1', recommended_fix: 'None.', materiality:'INFORMATIONAL', invariant:'The source is retrievable.', consequence:'None established.', smallest_correction:'None.', evidence_ids: [ids[0]] }],
     product_assessment:{purpose_fit:'Fixture',strengths:[],opportunities:[],reuse_or_simplify:[]},

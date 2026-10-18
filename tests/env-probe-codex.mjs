@@ -12,6 +12,8 @@ const report={
   project:'fixture',
   commit:'fake-model-commit',
   verdict:'INCONCLUSIVE',
+  technical_verdict:'INCONCLUSIVE',
+  viability_assessment:{project_type:'UNKNOWN',status:'PLAUSIBLE',problem:'Fixture only.',beneficiary:'Fixture test',evidence_for_value:[],evidence_against_value:[],substitutes:[],unique_value:'Fixture only.',proof_gap:'No value assessment.',strongest_stop_case:'Fixture only.',strongest_continue_case:'Fixture only.',would_start_today:'UNKNOWN',next_validation:null,override:null},
   executive_summary:process.env.TAKAVEN_TEST_SECRET ? 'secret-present' : 'secret-absent',
   runtime_status:'NOT RUN',
   runtime_evidence:[],
