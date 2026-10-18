@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { runDirectReview } from '../src/direct-review.mjs';
+import { runCapabilityPreflight, runDirectReview } from '../src/direct-review.mjs';
 
 function initCheckout() {
   const directory = mkdtempSync(join(tmpdir(), 'takaven-direct-target-'));
@@ -18,8 +18,17 @@ function initCheckout() {
 
 function fakeCodex(directory, body) {
   const script = join(directory, 'fake-codex.mjs');
-  writeFileSync(script, `import { writeFileSync } from 'node:fs';
+  writeFileSync(script, `import { readFileSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 if (process.argv.includes('--version')) { console.log('fake-codex 1.0'); process.exit(0); }
+if (process.cwd().includes('capability-fixture')) {
+  const marker = readFileSync('README.md', 'utf8').trim();
+  const commit = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+  const outputIndex = process.argv.indexOf('--output-last-message');
+  writeFileSync(process.argv[outputIndex + 1], \`commit: \${commit}\\n\${marker}\\nCONTINUE\\n\`);
+  console.log(\`tool git rev-parse HEAD cwd=\${process.cwd()}\`);
+  process.exit(0);
+}
 ${body}
 `);
   return script;
@@ -36,6 +45,7 @@ test('direct runner preflights, launches the model, captures raw output, sanitiz
   const fake = fakeCodex(root, `
 const outputIndex = process.argv.indexOf('--output-last-message');
 const reportPath = process.argv[outputIndex + 1];
+console.log('tool git rev-parse HEAD cwd=' + process.cwd());
 writeFileSync(reportPath, '# DIRECT_REVIEW_OK\\n\\nOBSERVED: local fixture inspected.\\nUNKNOWN: no live systems.\\n' + JSON.stringify({ args: process.argv, secret: process.env.DIRECT_REVIEW_SECRET ?? 'absent', manifest: process.env.BENCHMARK_MANIFEST ?? 'absent' }) + '\\n\\nCONTINUE\\n');
 `);
   const previousSecret = process.env.DIRECT_REVIEW_SECRET;
@@ -56,6 +66,9 @@ writeFileSync(reportPath, '# DIRECT_REVIEW_OK\\n\\nOBSERVED: local fixture inspe
     assert.match(report, /--output-last-message/);
     assert.equal(result.metadata.codex_version, 'fake-codex 1.0');
     assert.equal(result.metadata.model_execution_started, true);
+    assert.equal(result.metadata.repository_inspection, 'CONFIRMED');
+    assert.equal(result.metadata.capability_preflight.repository_tooling_available, true);
+    assert.equal(result.metadata.environment_difference.omitted_names.includes('DIRECT_REVIEW_SECRET'), true);
     assert.equal(result.metadata.original_source_unchanged, true);
     assert.equal(spawnSync('git', ['-C', target, 'status', '--porcelain'], { encoding: 'utf8' }).stdout, '');
     assert.equal(readdirSync(scratchRoot).length, 0);
@@ -66,6 +79,25 @@ writeFileSync(reportPath, '# DIRECT_REVIEW_OK\\n\\nOBSERVED: local fixture inspe
     rmSync(root, { recursive: true, force: true });
     rmSync(target, { recursive: true, force: true });
   }
+});
+
+test('capability preflight fails closed when the disposable marker is not observed', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'takaven-direct-capability-'));
+  const fake = join(root, 'fake-codex.mjs');
+  writeFileSync(fake, `import { writeFileSync } from 'node:fs';
+if (process.argv.includes('--version')) { console.log('fake-codex 1.0'); process.exit(0); }
+const outputIndex = process.argv.indexOf('--output-last-message');
+writeFileSync(process.argv[outputIndex + 1], 'CONTINUE\\n');
+`);
+  const scratch = join(root, 'scratch');
+  mkdirSync(scratch, { recursive: true });
+  try {
+    const result = await runCapabilityPreflight({ binary: fake, scratch, timeoutMs: 10000 });
+    assert.equal(result.model_started, true);
+    assert.equal(result.repository_tooling_available, false);
+    assert.equal(result.marker_observed, false);
+    assert.equal(result.commit_observed, false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test('direct runner classifies missing executable without a false audit result', async () => {

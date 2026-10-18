@@ -15,6 +15,18 @@ export function codexEnvironment(source = process.env) {
   return env;
 }
 
+// This comparison is intentionally names-only. It supports diagnostics without
+// leaking values from the operator's environment into reports or model input.
+export function compareCodexEnvironment(source = process.env) {
+  const parentNames = Object.keys(source).sort();
+  const sanitizedNames = Object.keys(codexEnvironment(source)).sort();
+  return {
+    parent_names: parentNames,
+    sanitized_names: sanitizedNames,
+    omitted_names: parentNames.filter(name => !sanitizedNames.includes(name)),
+  };
+}
+
 export function configuredTimeout() {
   const raw = process.env.TAKAVEN_CODEX_TIMEOUT_MS;
   if (raw === undefined) return 10 * 60 * 1000;
@@ -83,13 +95,14 @@ function terminateProcessTree(agent) {
   }
 }
 
-export function runCodex({ binary, args, cwd, prompt, timeoutMs, ignoreEnvironment = false }) {
+export function runCodex({ binary, args, cwd, prompt, timeoutMs, ignoreEnvironment = false, captureStdout = false }) {
   const resolved = resolveCodexCommand(binary, args);
   const startedAt = new Date().toISOString();
   const startedClock = Date.now();
   return new Promise((resolveRun, rejectRun) => {
     let agent;
     let stderr = '';
+    let stdout = '';
     let timedOut = false;
     let settled = false;
     let timer;
@@ -110,6 +123,7 @@ export function runCodex({ binary, args, cwd, prompt, timeoutMs, ignoreEnvironme
       cwd,
       started: Boolean(agent?.pid),
       stderr: stderr.slice(-5000),
+      stdout: stdout.slice(-12000),
       ...overrides,
     });
     try {
@@ -118,7 +132,7 @@ export function runCodex({ binary, args, cwd, prompt, timeoutMs, ignoreEnvironme
         env: ignoreEnvironment ? process.env : codexEnvironment(),
         windowsHide: true,
         detached: process.platform !== 'win32',
-        stdio: ['pipe', 'ignore', 'pipe']
+        stdio: ['pipe', captureStdout ? 'pipe' : 'ignore', 'pipe']
       });
     } catch (error) {
       finish(rejectRun, Object.assign(new Error(`Codex launch failed: ${error.message}`), metadata({
@@ -133,6 +147,12 @@ export function runCodex({ binary, args, cwd, prompt, timeoutMs, ignoreEnvironme
       terminateProcessTree(agent);
       forceTimer = setTimeout(() => terminateProcessTree(agent), 1000);
     }, timeoutMs);
+    if (captureStdout) {
+      agent.stdout.on('data', chunk => {
+        stdout += String(chunk);
+        if (stdout.length > 12000) stdout = stdout.slice(-12000);
+      });
+    }
     agent.stderr.on('data', chunk => {
       stderr += String(chunk);
       if (stderr.length > 5000) stderr = stderr.slice(-5000);
