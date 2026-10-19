@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { collectRepositorySnapshot } from '../src/audit.mjs';
+import { redactEvidenceText, sanitiseEvidenceValue } from '../src/evidence.mjs';
 
 test('controller snapshot reads source, withholds sensitive files, and redacts secret-like values',()=>{
   const root=mkdtempSync(join(tmpdir(),'takaven-snapshot-'));
@@ -26,6 +27,22 @@ test('controller snapshot reads source, withholds sensitive files, and redacts s
   } finally {
     rmSync(root,{recursive:true,force:true});
   }
+});
+
+test('redacts JavaScript/TypeScript declarations and inline credential configuration',()=>{
+  const source = [
+    'const apiKey = "SYNTH_API_KEY_123";',
+    'const password = "SYNTH_PASSWORD_456";',
+    'const serviceToken = "SYNTH_TOKEN_789";',
+    'const service_token = "SYNTH_SVC_UNDERSCORE";',
+    "let clientSecret = 'SYNTH_CLIENT_SECRET_111';",
+    'const config = { access_token: "SYNTH_ACCESS_TOKEN_222" };',
+    'const harmless = "keep-this";'
+  ].join('\n');
+  const redacted = redactEvidenceText(source);
+  assert.doesNotMatch(redacted,/SYNTH_(?:API_KEY_123|PASSWORD_456|TOKEN_789|SVC_UNDERSCORE|CLIENT_SECRET_111|ACCESS_TOKEN_222)/);
+  assert.match(redacted,/const harmless = "keep-this"/);
+  assert.doesNotMatch(JSON.stringify(sanitiseEvidenceValue({content:source})),/SYNTH_(?:API_KEY_123|PASSWORD_456|TOKEN_789|SVC_UNDERSCORE|CLIENT_SECRET_111|ACCESS_TOKEN_222)/);
 });
 
 test('snapshot prioritizes executable flow and local imports before documentation',()=>{
@@ -54,3 +71,4 @@ test('snapshot prioritizes executable flow and local imports before documentatio
     rmSync(root,{recursive:true,force:true});
   }
 });
+
