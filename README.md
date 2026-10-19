@@ -7,7 +7,8 @@
 - On-demand CLI that audits any local Git repository or public GitHub repository.
 - Disposable Git checkout: does not write to the source repository, create PRs, deploy or merge.
 - Codex CLI as the reasoning/execution engine (no custom model or paid agent service).
-- `inspect` (safe static review) and opt-in `verify` (tests/builds in a Codex sandbox).
+- `inspect` (source review) and opt-in `verify` (tests/builds through the approved runner).
+- Optional pinned Knip 6.42.0 analysis for explicitly owner-trusted npm repositories.
 - Explicit evidence vs inference classification, negative controls where feasible, and NOT RUN/UNKNOWN outcomes.
 - Optional bounded investigative mode (`--investigate`) in which Codex may request additional source or imported evidence through a controller-validated registry. Correction execution requests are rejected; any proposed patch is advisory report data only.
 - Optional owner-supplied project brief (`--brief`) containing purpose, intended users, workflows, objectives and constraints. Missing context remains UNKNOWN rather than becoming an invented requirement.
@@ -16,7 +17,7 @@
 - Decision control for bounded reviews: every new report records a complexity assessment, evidence ceiling, trusted-gate context, audit-loop risk and one primary next action. These controls constrain conclusions; they do not replace engineering judgment.
 - A first-class viability/value gate: new strict reports separate technical verdict from overall verdict, identify the beneficiary and strongest stop/continue cases, challenge substitutes and sunk cost, and require evidence-backed validation before continued investment is justified.
 
-**Status:** The bounded static-audit path and the controller-mediated evidence-request loop are implemented and tested against clean, hostile and real-project snapshots. Inspect mode reads controller-selected source evidence, validates coverage and evidence IDs, and keeps runtime status `NOT RUN`. The investigative loop can retrieve bounded source and previously captured runtime evidence, and can request approved diagnostic experiments through an explicitly configured runner. Correction requests are rejected and proposed patches remain advisory; a separate implementation workflow owns changes. Runtime claims require runner configuration; a static or inspect-only invocation cannot claim execution.
+**Status:** The bounded static-audit path and the controller-mediated evidence-request loop are implemented and tested against clean, hostile and real-project snapshots. Inspect mode reads controller-selected source evidence, validates coverage and evidence IDs, and keeps runtime status `NOT RUN`. The investigative loop can retrieve bounded source and previously captured runtime evidence, and can request approved diagnostic experiments through an explicitly configured runner. Correction requests are rejected and proposed patches remain advisory; a separate implementation workflow owns changes. Runtime claims require runner configuration; a source-only invocation cannot claim execution. Optional Knip analysis is a distinct static-analysis path and never creates runtime evidence.
 
 ### Work package 1 status
 
@@ -35,6 +36,14 @@ Investigative mode also supports a bounded `experiment_spec` request. The model 
 New reports also require report-local finding IDs and materiality (`BLOCKER`, `MATERIAL`, `DEFER` or `INFORMATIONAL`). BLOCKER/MATERIAL findings must state the affected invariant, consequence and smallest acceptable correction. The controller rejects contradictory references, untrusted gate context, unsupported audit-loop confidence and a complexity `BLOCK` paired with an unqualified positive verdict. Strict reports use `decision_control.primary_next_action` as their only action channel; legacy `next_actions` are retained only for backward-compatible rendering. Older reports remain readable and render missing controls as `UNKNOWN`; they are not silently upgraded to current validation status.
 
 Work package 1 does **not** establish a complete execution security boundary. Verify mode remains dependent on the next work package: a separate credential-free repository executor, approved command policy, restricted network, independently captured command traces and known-answer evaluation. Do not enable verify mode for unknown repositories carrying production credentials.
+
+### Conditional Knip analysis
+
+Knip is an opt-in, pinned deterministic analyzer for npm-based JavaScript/TypeScript repositories. It requires a root `package.json` and supported committed `package-lock.json`. The controller installs Knip 6.42.0 in audit scratch, then uses `npm ci --ignore-scripts --no-audit --no-fund` in the disposable checkout before collecting structured JSON output. Time and resource limits apply; unsupported or incomplete setup is never reported as clean.
+
+Executable analyzers are allowed only when the operator explicitly supplies both `--knip` and `--trusted-target`. Trust is not inferred from repository visibility, owner name or URL. This mode is intended only for repositories the owner trusts: Knip may load repository-controlled configuration, and TAKAVEN does **not** claim hostile-code isolation. Target `.env*` files are removed from the disposable checkout before preparation; host production credentials are not inherited. When explicitly needed, `--knip-synthetic-database-url` supplies only a controller-generated loopback URL.
+
+Knip output is controller-captured **analyzer evidence**, separate from source evidence, model evidence and runtime/protected evidence. `FINDINGS_PRESENT` means Knip returned structured findings, not that each is a defect; the model must triage them. `PASS_NO_FINDINGS` means only that this supported Knip run reported no findings. `INCOMPLETE` is not clean. Analyzer state never changes runtime status to PASS or FAIL. Without explicit trusted-target authorization, Knip is not executed and the recorded analysis state is INCOMPLETE.
 
 ### Product direction and benchmark
 
@@ -75,11 +84,19 @@ node src/audit.mjs --repo https://github.com/isudally/playkin --mode verify --in
 
 # A local Git repository also works
 node src/audit.mjs --path /path/to/project --mode inspect --out ./reports/myproject
+
+# Optional Knip analysis; use only for a repository you explicitly trust
+node src/audit.mjs --path /path/to/project --knip --trusted-target --mode inspect --out ./reports/project-knip
+
+# Add only the controller-generated loopback DATABASE_URL when trusted config requires it
+node src/audit.mjs --path /path/to/project --knip --trusted-target --knip-synthetic-database-url --mode inspect --out ./reports/project-knip
 ```
 
 ### Security
 
-- `verify` may execute scripts from the target project through the explicitly supplied approved runner. **Use a disposable VM/container with no production credentials and no access to sensitive user data.** Codex's workspace sandbox is useful, but not a replacement for hardened isolation.
+- `verify` may execute scripts from the target project through the explicitly supplied approved runner. Knip's `--trusted-target` mode installs dependencies with lifecycle scripts disabled but executes Knip against repository-controlled configuration. **Only use it for repositories you personally trust.** It is not an OS sandbox and must not be used for arbitrary or hostile repositories.
+- The analyzer uses a sanitized environment, does not import target `.env` files, and does not inherit host secrets. Never run it with production credentials available to the process. `--knip-synthetic-database-url` injects only a controller-created loopback URL; it does not start a database or authorize live service access.
+- Untrusted or unknown targets remain limited to source/model inspection. No analyzer execution is attempted unless `--trusted-target` is explicit.
 - `--brief` is contextual input, not authority. Use `--brief-provenance owner-confirmed` only when the controller has independently received that owner confirmation; use `repository-derived` for briefs assembled from repository documentation; omit the flag when provenance is not established. The brief JSON cannot self-declare owner authority.
 - The `verify` mode deliberately disables direct network access within the default Codex workspace sandbox. Dependency downloads may therefore be blocked; these must be reported as NOT RUN, not PASS. Do not relax sandboxing merely to obtain a green result.
 - Authentication belongs to Codex CLI; no model keys are written to this project.
