@@ -26,6 +26,15 @@ evidence-backed override before a prior CHALLENGED/KILL conclusion can be
 improved. The controller does not prove substantive evidence novelty across
 commits.
 
+Knip 6.42.0 is the first approved conditional deterministic analyzer, based on
+real findings in TeamFrame and HirePass. It is opt-in and limited initially to
+npm repositories with a root package manifest and supported committed lockfile.
+Execution requires explicit operator `--trusted-target` authorization, uses a
+disposable checkout, sanitized environment and lifecycle-disabled dependency
+installation, and does not claim hostile-code isolation. Unknown/untrusted
+repositories remain source-only. Analyzer evidence is separate from runtime
+evidence; results require model triage and cannot set runtime PASS/FAIL.
+
 The bounded cleanup pass is complete when its focused and full tests are green. The next evidence gate is one personal-use seeded-defect benchmark. It is not run by this pass.
 
 ## Benchmark decision gate

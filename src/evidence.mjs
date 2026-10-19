@@ -6,6 +6,7 @@ const SECRET_KEY = /^(?:api[_-]?key|secret|token|password|passwd|private[_-]?key
 const TOKEN_VALUE = /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|AKIA[A-Z0-9]{12,}|xox[baprs]-[A-Za-z0-9-]{12,})\b/g;
 const SOURCE_EVIDENCE_TYPES = new Set(['source_snapshot', 'source']);
 const EXECUTION_EVIDENCE_TYPES = new Set(['executed_command', 'browser_execution', 'runner_execution']);
+const ANALYZER_EVIDENCE_TYPES = new Set(['analyzer_execution']);
 
 export function redactEvidenceText(value) {
   return String(value)
@@ -86,6 +87,15 @@ export function isEligibleFindingEvidence(registry, id, { source = registry?.sou
     return typeof record.location === 'string'
       && typeof record.content_hash === 'string'
       && ['retrieved', 'read'].includes(record.outcome);
+  }
+  if (ANALYZER_EVIDENCE_TYPES.has(record.type)) {
+    return record.analyzer === 'knip'
+      && record.analyzer_version === '6.42.0'
+      && ['FINDINGS_PRESENT', 'PASS_NO_FINDINGS'].includes(record.state)
+      && record.execution_verified === true
+      && Number.isInteger(record.finding_count)
+      && record.finding_count > 0
+      && Array.isArray(record.structured_findings);
   }
   return EXECUTION_EVIDENCE_TYPES.has(record.type) && deriveRuntimeEvidenceStatus(record) !== null;
 }

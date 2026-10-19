@@ -126,7 +126,7 @@ test('model-request evidence cannot support a source finding',()=>{
   const registry=createEvidenceRegistry({source:'fixture',commit:'abc'});
   const requestId=captureEvidence(registry,{type:'model_request',action:'investigation_round',outcome:'request'});
   const report={...sample,commit:'abc',runtime_status:'NOT RUN',runtime_evidence:[],findings:[{...sample.findings[0],evidence_ids:[requestId]}]};
-  assert.throws(()=>validateReport(report,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true}),/eligible controller source or execution evidence/);
+  assert.throws(()=>validateReport(report,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true}),/eligible controller source, analyzer or execution evidence/);
 });
 test('verify mode requires the controller-mediated investigation path',()=>{
   assert.throws(()=>parseArgs(['--repo','https://github.com/a/b','--mode','verify','--runner-config','package.json']),/--investigate is required/);
@@ -243,7 +243,7 @@ test('complexity claims require eligible controller evidence',()=>{
   assert.doesNotThrow(()=>validateReport(base,{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}));
   for (const type of ['model_request','imported_external']) {
     const id=captureEvidence(registry,{type,action:'untrusted',outcome:'received'});
-    assert.throws(()=>validateReport({...base,complexity_assessment:{...base.complexity_assessment,items:[{...base.complexity_assessment.items[0],evidence_ids:[id]}]}},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}),/eligible controller source or execution evidence/);
+    assert.throws(()=>validateReport({...base,complexity_assessment:{...base.complexity_assessment,items:[{...base.complexity_assessment.items[0],evidence_ids:[id]}]}},{mode:'inspect',evidenceRegistry:registry,requireEvidenceIds:true,requireDecisionControls:true}),/eligible controller source, analyzer or execution evidence/);
   }
 });
 test('legacy reports render with safe UNKNOWN controls',()=>{
