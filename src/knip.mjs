@@ -202,12 +202,15 @@ function parseKnipOutput(stdout) {
   return { raw: value, findings };
 }
 
-function recordResult(registry, { source, commit, state, details = {}, executionVerified = false }) {
+function recordResult(registry, { source, commit, state, details = {}, executionVerified = false, checkoutIdentity = 'disposable_analyzer_checkout', auditCheckoutCommit = commit, analyzerCheckoutCommit = commit }) {
   const safeDetails = {
     analyzer: 'knip',
     analyzer_version: KNIP_VERSION,
     source,
     commit,
+    analyzer_checkout: checkoutIdentity,
+    audit_checkout_commit: auditCheckoutCommit,
+    analyzer_checkout_commit: analyzerCheckoutCommit,
     state,
     execution_verified: executionVerified,
     ...details,
@@ -216,20 +219,32 @@ function recordResult(registry, { source, commit, state, details = {}, execution
   return { state, evidence_id: evidenceId, analyzer: 'knip', version: KNIP_VERSION, finding_count: details.finding_count ?? 0 };
 }
 
-export function runKnip({ checkout, scratch, source, commit, registry, trustedTarget = false, syntheticDatabaseUrl = false, run = spawnSync, platform = process.platform } = {}) {
+export function runKnip({ checkout, scratch, source, commit, registry, trustedTarget = false, syntheticDatabaseUrl = false, run = spawnSync, platform = process.platform, checkoutIdentity = 'disposable_analyzer_checkout', auditCheckoutCommit = commit, analyzerCheckoutCommit = commit } = {}) {
   if (!checkout || !scratch || !source || !commit || !registry) throw new Error('Knip requires a checkout, scratch path, source, commit and evidence registry.');
-  if (!trustedTarget) return recordResult(registry, {
+  let excludedEnvironmentFiles = 0;
+  const record = options => recordResult(registry, {
+    ...options,
+    checkoutIdentity,
+    auditCheckoutCommit,
+    analyzerCheckoutCommit,
+    details: { target_environment_files_excluded: excludedEnvironmentFiles, ...options.details },
+  });
+  if (auditCheckoutCommit !== commit || analyzerCheckoutCommit !== commit) return record({
+    source, commit, state: 'INCOMPLETE', executionVerified: false,
+    details: { reason: `Knip checkout commit mismatch: audit=${auditCheckoutCommit}; analyzer=${analyzerCheckoutCommit}; pinned=${commit}.`, dependency_preparation: 'not_started', execution_authorization: 'not_executed', host_isolation: 'not_claimed' },
+  });
+  if (!trustedTarget) return record({
     source, commit, state: 'INCOMPLETE', executionVerified: false,
     details: { reason: 'UNTRUSTED_TARGET: Knip was requested without explicit owner-trusted-target authorization; no dependency install or analyzer execution occurred.', dependency_preparation: 'not_started', execution_authorization: 'not_executed', host_isolation: 'not_claimed' },
   });
 
   const project = inspectProject(checkout);
-  if (project.reason) return recordResult(registry, {
+  if (project.reason) return record({
     source, commit, state: 'INCOMPLETE', executionVerified: false,
     details: { reason: project.reason, dependency_preparation: 'not_started', execution_authorization: 'explicit_owner_trust', host_isolation: 'not_claimed' },
   });
 
-  const excludedEnvironmentFiles = removeTargetEnvironmentFiles(checkout);
+  excludedEnvironmentFiles = removeTargetEnvironmentFiles(checkout);
 
   const toolDir = join(scratch, 'knip-tool');
   mkdirSync(toolDir, { recursive: true });
@@ -240,13 +255,13 @@ export function runKnip({ checkout, scratch, source, commit, registry, trustedTa
   }, platform);
   const toolInstallMs = Date.now() - installStarted;
   const toolPackage = join(toolDir, 'node_modules', 'knip', 'package.json');
-  if (toolInstall.error || toolInstall.status !== 0 || !existsSync(toolPackage)) return recordResult(registry, {
+  if (toolInstall.error || toolInstall.status !== 0 || !existsSync(toolPackage)) return record({
     source, commit, state: 'TOOL_FAILURE', executionVerified: false,
     details: { reason: toolInstall.error?.message ?? 'Pinned Knip installation did not complete.', dependency_preparation: 'not_started', install_exit_code: toolInstall.status ?? null, install_duration_ms: toolInstallMs, install_stdout: boundedText(toolInstall.stdout), install_stderr: boundedText(toolInstall.stderr), install_stdout_hash: sha256(toolInstall.stdout ?? ''), install_stderr_hash: sha256(toolInstall.stderr ?? ''), execution_authorization: 'explicit_owner_trust', host_isolation: 'not_claimed' },
   });
   let installedVersion;
   try { installedVersion = JSON.parse(readFileSync(toolPackage, 'utf8')).version; } catch { installedVersion = null; }
-  if (installedVersion !== KNIP_VERSION) return recordResult(registry, {
+  if (installedVersion !== KNIP_VERSION) return record({
     source, commit, state: 'TOOL_FAILURE', executionVerified: false,
     details: { reason: `Knip version mismatch: requested ${KNIP_VERSION}; observed ${installedVersion ?? 'unreadable'}.`, dependency_preparation: 'not_started', install_exit_code: toolInstall.status, install_duration_ms: toolInstallMs, execution_authorization: 'explicit_owner_trust', host_isolation: 'not_claimed' },
   });
@@ -258,34 +273,34 @@ export function runKnip({ checkout, scratch, source, commit, registry, trustedTa
   const dependencyDurationMs = Date.now() - dependencyStarted;
   const dependencyStdout = boundedText(dependencyInstall.stdout);
   const dependencyStderr = boundedText(dependencyInstall.stderr);
-  if (dependencyInstall.error || dependencyInstall.status !== 0) return recordResult(registry, {
+  if (dependencyInstall.error || dependencyInstall.status !== 0) return record({
     source, commit, state: 'INCOMPLETE', executionVerified: false,
     details: { reason: dependencyInstall.error?.message ?? 'npm ci did not complete successfully.', dependency_preparation: 'failed', dependency_exit_code: dependencyInstall.status ?? null, dependency_duration_ms: dependencyDurationMs, dependency_stdout: dependencyStdout, dependency_stderr: dependencyStderr, dependency_stdout_hash: sha256(dependencyInstall.stdout ?? ''), dependency_stderr_hash: sha256(dependencyInstall.stderr ?? ''), execution_authorization: 'explicit_owner_trust', host_isolation: 'not_claimed' },
   });
 
   const nodeModules = join(checkout, 'node_modules');
-  if (!existsSync(nodeModules)) return recordResult(registry, {
+  if (!existsSync(nodeModules)) return record({
     source, commit, state: 'INCOMPLETE', executionVerified: false,
     details: { reason: 'npm ci succeeded but did not create node_modules.', dependency_preparation: 'completed_without_node_modules', dependency_exit_code: 0, dependency_duration_ms: dependencyDurationMs, execution_authorization: 'explicit_owner_trust', host_isolation: 'not_claimed' },
   });
   let dependencyBytes;
-  try { dependencyBytes = directoryBytes(nodeModules); } catch (error) { return recordResult(registry, {
+  try { dependencyBytes = directoryBytes(nodeModules); } catch (error) { return record({
     source, commit, state: 'INCOMPLETE', executionVerified: false,
     details: { reason: `Could not measure disposable node_modules footprint: ${error.message}`, dependency_preparation: 'completed_footprint_unavailable', dependency_exit_code: 0, dependency_duration_ms: dependencyDurationMs, execution_authorization: 'explicit_owner_trust', host_isolation: 'not_claimed' },
   }); }
-  if (dependencyBytes > MAX_NODE_MODULES_BYTES) return recordResult(registry, {
+  if (dependencyBytes > MAX_NODE_MODULES_BYTES) return record({
     source, commit, state: 'INCOMPLETE', executionVerified: false,
     details: { reason: `node_modules is ${dependencyBytes} bytes; the controller limit is ${MAX_NODE_MODULES_BYTES} bytes.`, dependency_preparation: 'completed_resource_bound_exceeded', dependency_bytes: dependencyBytes, dependency_exit_code: 0, dependency_duration_ms: dependencyDurationMs, execution_authorization: 'explicit_owner_trust', host_isolation: 'not_claimed' },
   });
 
   const knipPackage = JSON.parse(readFileSync(toolPackage, 'utf8'));
   const bin = typeof knipPackage.bin === 'string' ? knipPackage.bin : knipPackage.bin?.knip;
-  if (typeof bin !== 'string') return recordResult(registry, {
+  if (typeof bin !== 'string') return record({
     source, commit, state: 'TOOL_FAILURE', executionVerified: false,
     details: { reason: 'Pinned Knip package did not declare its CLI entry point.', dependency_preparation: 'completed', dependency_bytes: dependencyBytes, execution_authorization: 'explicit_owner_trust', host_isolation: 'not_claimed' },
   });
   const knipEntrypoint = resolve(toolDir, 'node_modules', 'knip', bin);
-  if (!knipEntrypoint.startsWith(`${resolve(toolDir)}${process.platform === 'win32' ? '\\' : '/'}`) || !existsSync(knipEntrypoint)) return recordResult(registry, {
+  if (!knipEntrypoint.startsWith(`${resolve(toolDir)}${process.platform === 'win32' ? '\\' : '/'}`) || !existsSync(knipEntrypoint)) return record({
     source, commit, state: 'TOOL_FAILURE', executionVerified: false,
     details: { reason: 'Knip CLI entry point is missing or escapes the temporary tool directory.', dependency_preparation: 'completed', dependency_bytes: dependencyBytes, execution_authorization: 'explicit_owner_trust', host_isolation: 'not_claimed' },
   });
@@ -315,28 +330,28 @@ export function runKnip({ checkout, scratch, source, commit, registry, trustedTa
     execution_authorization: 'explicit_owner_trust',
     host_isolation: 'not_claimed',
   };
-  if (analysis.error || analysis.signal || analysis.status === null) return recordResult(registry, {
+  if (analysis.error || analysis.signal || analysis.status === null) return record({
     source, commit, state: 'TOOL_FAILURE', executionVerified: false,
     details: { ...baseDetails, reason: analysis.error?.message ?? `Knip process ended by ${analysis.signal ?? 'unknown signal'}.` },
   });
   let parsed;
   try { parsed = parseKnipOutput(analysis.stdout ?? ''); } catch (error) {
     const configError = /config(?:uration)?|failed to load|could not load|cannot load/i.test(`${stderr}\n${error.message}`);
-    return recordResult(registry, {
+    return record({
       source, commit, state: configError ? 'INCOMPLETE' : 'TOOL_FAILURE', executionVerified: false,
       details: { ...baseDetails, reason: error.message, configuration_incomplete: configError },
     });
   }
-  if (analysis.status === 2 || /(?:failed|unable|cannot|could not) (?:to )?(?:load|resolve).*config|configuration (?:error|failed)/i.test(stderr)) return recordResult(registry, {
+  if (analysis.status === 2 || /(?:failed|unable|cannot|could not) (?:to )?(?:load|resolve).*config|configuration (?:error|failed)/i.test(stderr)) return record({
     source, commit, state: 'INCOMPLETE', executionVerified: false,
     details: { ...baseDetails, reason: 'Knip reported a project configuration-loading failure.', configuration_incomplete: true, structured_findings: parsed.findings, finding_count: parsed.findings.length },
   });
-  if (![0, 1].includes(analysis.status) || (analysis.status === 1 && parsed.findings.length === 0)) return recordResult(registry, {
+  if (![0, 1].includes(analysis.status) || (analysis.status === 1 && parsed.findings.length === 0)) return record({
     source, commit, state: 'TOOL_FAILURE', executionVerified: false,
     details: { ...baseDetails, reason: `Unexpected Knip exit code ${analysis.status}.`, structured_findings: parsed.findings, finding_count: parsed.findings.length },
   });
   const state = parsed.findings.length ? 'FINDINGS_PRESENT' : 'PASS_NO_FINDINGS';
-  return recordResult(registry, {
+  return record({
     source, commit, state, executionVerified: true,
     details: { ...baseDetails, structured_findings: parsed.findings, finding_count: parsed.findings.length },
   });

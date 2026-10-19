@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -7,6 +8,7 @@ import { parseArgs } from '../src/core.mjs';
 import { createEvidenceRegistry, deriveRuntimeEvidenceStatus, isEligibleFindingEvidence, isEligibleRuntimeEvidence } from '../src/evidence.mjs';
 import { KNIP_VERSION, NPM_CI_TIMEOUT_MS, runKnip, summarizeKnipFindings } from '../src/knip.mjs';
 import { applyControllerRuntimeResults } from '../src/runtime.mjs';
+import { clonePinnedAnalyzerCheckout } from '../src/audit.mjs';
 
 const source = 'https://github.com/example/project.git';
 const commit = 'a'.repeat(40);
@@ -210,4 +212,56 @@ test('dependency preparation leaves committed project source files unchanged', t
   analyze(fixture);
   assert.equal(readFileSync(join(fixture.checkout, 'package.json'), 'utf8'), packageBefore);
   assert.equal(readFileSync(join(fixture.checkout, 'package-lock.json'), 'utf8'), lockBefore);
+});
+
+test('analyzer uses a separately pinned checkout and leaves the audit checkout pristine', t => {
+  const root = mkdtempSync(join(process.cwd(), '.knip-checkouts-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const sourceRepo = join(root, 'source');
+  const scratch = join(root, 'scratch');
+  const auditCheckout = join(scratch, 'repo');
+  const analyzerCheckout = join(scratch, 'knip-repo');
+  mkdirSync(sourceRepo);
+  mkdirSync(scratch);
+  execFileSync('git', ['init', '--quiet', sourceRepo]);
+  execFileSync('git', ['-C', sourceRepo, 'config', 'user.email', 'test@example.invalid']);
+  execFileSync('git', ['-C', sourceRepo, 'config', 'user.name', 'TAKAVEN test']);
+  writeFileSync(join(sourceRepo, 'package.json'), JSON.stringify({ name: 'fixture', packageManager: 'npm@11.0.0' }));
+  writeFileSync(join(sourceRepo, 'package-lock.json'), JSON.stringify({ name: 'fixture', lockfileVersion: 3, packages: { '': { name: 'fixture' } } }));
+  writeFileSync(join(sourceRepo, 'index.mjs'), 'export const marker = true;\n');
+  writeFileSync(join(sourceRepo, '.env.example'), 'DATABASE_URL=example-only\n');
+  execFileSync('git', ['-C', sourceRepo, 'add', '.']);
+  execFileSync('git', ['-C', sourceRepo, 'commit', '--quiet', '-m', 'fixture']);
+  execFileSync('git', ['clone', '--quiet', '--no-hardlinks', '--', sourceRepo, auditCheckout]);
+  const pinnedCommit = execFileSync('git', ['-C', auditCheckout, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  const analyzer = clonePinnedAnalyzerCheckout(sourceRepo, analyzerCheckout, scratch, pinnedCommit, true);
+  assert.equal(analyzer.commit, pinnedCommit);
+
+  const registry = createEvidenceRegistry({ source, commit: pinnedCommit });
+  const observed = [];
+  const result = runKnip({ checkout: analyzerCheckout, scratch, source, commit: pinnedCommit, registry, trustedTarget: true, run: completedRunner({ observed }), checkoutIdentity: 'disposable_analyzer_checkout', auditCheckoutCommit: pinnedCommit, analyzerCheckoutCommit: analyzer.commit });
+
+  assert.equal(result.state, 'PASS_NO_FINDINGS');
+  assert.equal(readFileSync(join(auditCheckout, '.env.example'), 'utf8'), 'DATABASE_URL=example-only\n');
+  assert.equal(existsSync(join(auditCheckout, 'node_modules')), false);
+  assert.equal(existsSync(join(analyzerCheckout, '.env.example')), false);
+  assert.equal(existsSync(join(analyzerCheckout, 'node_modules')), true);
+  const evidence = registry.records.find(record => record.evidence_id === result.evidence_id);
+  assert.equal(evidence.audit_checkout_commit, pinnedCommit);
+  assert.equal(evidence.analyzer_checkout_commit, pinnedCommit);
+  assert.equal(evidence.analyzer_checkout, 'disposable_analyzer_checkout');
+  assert.equal(evidence.target_environment_files_excluded, 1);
+  rmSync(scratch, { recursive: true, force: true });
+  assert.equal(existsSync(analyzerCheckout), false);
+  assert.equal(existsSync(auditCheckout), false);
+});
+
+test('checkout commit mismatch is incomplete and prevents all analyzer execution', t => {
+  const fixture = createFixture();
+  t.after(() => rmSync(fixture.root, { recursive: true, force: true }));
+  let calls = 0;
+  const result = runKnip({ ...fixture, source, commit, trustedTarget: true, auditCheckoutCommit: commit, analyzerCheckoutCommit: 'b'.repeat(40), run: () => { calls++; throw new Error('must not execute'); } });
+  assert.equal(result.state, 'INCOMPLETE');
+  assert.equal(calls, 0);
+  assert.match(fixture.registry.records[0].reason, /commit mismatch/);
 });

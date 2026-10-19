@@ -568,6 +568,27 @@ function cloneLocalRepository(source, checkout, scratch, ref) {
   }
 }
 
+export function clonePinnedAnalyzerCheckout(source, checkout, scratch, commit, localSource) {
+  if (localSource) {
+    const cloned = cloneLocalRepository(source, checkout, scratch, commit);
+    if (!cloned.archiveFallback && cloned.commit !== commit) {
+      command('git', ['fetch', '--quiet', 'origin', '--', commit], { cwd: checkout, timeout: 120000 });
+      command('git', ['checkout', '--quiet', '--detach', 'FETCH_HEAD'], { cwd: checkout });
+    }
+    const resolvedCommit = cloned.archiveFallback ? cloned.commit : command('git', ['rev-parse', 'HEAD'], { cwd: checkout });
+    return { commit: resolvedCommit, archiveFallback: cloned.archiveFallback };
+  }
+
+  command('git', ['clone', '--quiet', '--depth', '1', '--no-tags', '--', source, checkout], { timeout: 120000 });
+  let resolvedCommit = command('git', ['rev-parse', 'HEAD'], { cwd: checkout });
+  if (resolvedCommit !== commit) {
+    command('git', ['fetch', '--quiet', '--depth', '1', 'origin', '--', commit], { cwd: checkout, timeout: 120000 });
+    command('git', ['checkout', '--quiet', '--detach', 'FETCH_HEAD'], { cwd: checkout });
+    resolvedCommit = command('git', ['rev-parse', 'HEAD'], { cwd: checkout });
+  }
+  return { commit: resolvedCommit, archiveFallback: false };
+}
+
 function inspectLocalWorkingTree(source) {
   const status = command('git', ['-C', source, 'status', '--porcelain=v1', '--untracked-files=all']);
   const changes = status ? status.split(/\r?\n/).filter(Boolean) : [];
@@ -629,7 +650,13 @@ async function main(){
     registry = createEvidenceRegistry({ source: originalSource, commit, scenario: runnerConfig?.scenario ?? 'default', requiredChecks: checkScope.required, configuredChecks: checkScope.configured, briefProvenance: args.briefProvenance });
     captureInitialSourceEvidence(snapshot, registry);
     if (args.evidence) captureImportedEvidence(args.evidence, registry);
-    const knipResult = args.knip ? runKnip({ checkout, scratch, source: originalSource, commit, registry, trustedTarget: args.trustedTarget, syntheticDatabaseUrl: args.knipSyntheticDatabaseUrl }) : null;
+    let knipResult = null;
+    if (args.knip) {
+      const analyzerCheckout = join(scratch, 'knip-repo');
+      const analyzerSnapshot = clonePinnedAnalyzerCheckout(originalSource, analyzerCheckout, scratch, commit, Boolean(args.path));
+      if (analyzerSnapshot.commit !== commit) throw new Error(`Knip analyzer checkout commit mismatch: audit=${commit}; analyzer=${analyzerSnapshot.commit}`);
+      knipResult = runKnip({ checkout: analyzerCheckout, scratch, source: originalSource, commit, registry, trustedTarget: args.trustedTarget, syntheticDatabaseUrl: args.knipSyntheticDatabaseUrl, checkoutIdentity: 'disposable_analyzer_checkout', auditCheckoutCommit: commit, analyzerCheckoutCommit: analyzerSnapshot.commit });
+    }
     const runner = runnerConfig ? createApprovedRunner({ config: runnerConfig, registry, scratch, timeoutMs: configuredTimeout() }) : undefined;
     let coverage = { ...snapshot.coverage, working_tree: workingTree };
     const brief = args.brief ? readProjectBrief(args.brief) : null;
@@ -647,7 +674,7 @@ async function main(){
     if (gateContext) captureEvidence(registry, { type: 'controller_context', action: 'trusted_gate_context', outcome: 'validated', gate_context: gateContext });
     if (auditHistory) captureEvidence(registry, { type: 'controller_context', action: 'validated_audit_history', outcome: 'validated', previous_commit: auditHistory.previous_commit, previous_finding_ids: auditHistory.previous_finding_ids });
     if (auditHistoryError) captureEvidence(registry, { type: 'controller_context', action: 'invalid_audit_history', outcome: 'rejected', reason: auditHistoryError });
-    const analyzerResults = registry.records.filter(record => record.type === 'analyzer_execution').map(record => ({ evidence_id: record.evidence_id, analyzer: record.analyzer, version: record.analyzer_version, state: record.state, execution_verified: record.execution_verified, finding_count: record.finding_count ?? 0, ...(record.structured_findings ? summarizeKnipFindings(record.structured_findings) : {}), reason: record.reason ?? null }));
+    const analyzerResults = registry.records.filter(record => record.type === 'analyzer_execution').map(record => ({ evidence_id: record.evidence_id, analyzer: record.analyzer, version: record.analyzer_version, state: record.state, execution_verified: record.execution_verified, analyzer_checkout: record.analyzer_checkout, audit_checkout_commit: record.audit_checkout_commit, analyzer_checkout_commit: record.analyzer_checkout_commit, target_environment_files_excluded: record.target_environment_files_excluded ?? 0, dependency_preparation: record.dependency_preparation ?? null, finding_count: record.finding_count ?? 0, ...(record.structured_findings ? summarizeKnipFindings(record.structured_findings) : {}), reason: record.reason ?? null }));
     const prompt=promptForRun({projectName:name,commit,mode:args.mode,contract,mission,targetPath:checkout,brief,briefProvenance: args.briefProvenance,gateContext,auditHistory,snapshot:{ ...snapshot, coverage, evidence_registry: evidenceRegistryIndex(registry), analyzer_results: analyzerResults }});
     const schema=join(root,'report.schema.json');
     console.log(`Auditing ${name} at ${commit.slice(0,12)} [${args.mode}]...`);
@@ -684,7 +711,7 @@ async function main(){
     writeFileSync(join(output,'report.md'),renderMarkdown(report,{source:originalSource,mode:args.mode,briefProvenance:args.briefProvenance,timestamp:new Date().toISOString()}),{mode:0o600});
     const originalUntouched = !args.path || inspectLocalWorkingTree(args.path).status_fingerprint === workingTree.status_fingerprint;
     if (!originalUntouched) throw new Error('Original project changed during audit; refusing to report it as untouched');
-    writeFileSync(join(output,'audit-metadata.json'),JSON.stringify({source:originalSource,commit,mode:args.mode,brief_provenance:args.briefProvenance,gate_context:gateContext,audit_history: auditHistory ? { current_target: auditHistory.current_target, previous_metadata: auditHistory.previous_metadata, previous_report: auditHistory.previous_report, gate_context: auditHistory.gate_context, repeated_same_gate: auditHistory.repeated_same_gate, narrowing_findings: auditHistory.narrowing_findings, remaining_runtime_uncertainty: auditHistory.remaining_runtime_uncertainty, diminishing_source_value: auditHistory.diminishing_source_value } : null,audit_history_rejected: auditHistoryError,analyzers: knipResult ? [{ analyzer: 'knip', version: KNIP_VERSION, state: knipResult.state, evidence_id: knipResult.evidence_id, finding_count: knipResult.finding_count }] : [],coverage,createdAt:new Date().toISOString(),originalUntouched},null,2)+'\n');
+    writeFileSync(join(output,'audit-metadata.json'),JSON.stringify({source:originalSource,commit,mode:args.mode,brief_provenance:args.briefProvenance,gate_context:gateContext,audit_history: auditHistory ? { current_target: auditHistory.current_target, previous_metadata: auditHistory.previous_metadata, previous_report: auditHistory.previous_report, gate_context: auditHistory.gate_context, repeated_same_gate: auditHistory.repeated_same_gate, narrowing_findings: auditHistory.narrowing_findings, remaining_runtime_uncertainty: auditHistory.remaining_runtime_uncertainty, diminishing_source_value: auditHistory.diminishing_source_value } : null,audit_history_rejected: auditHistoryError,analyzers: analyzerResults,coverage,createdAt:new Date().toISOString(),originalUntouched},null,2)+'\n');
     writeFileSync(join(output,'evidence-registry.json'),JSON.stringify({registry:serialiseEvidenceRegistry(registry),investigation:investigationHistory},null,2)+'\n',{mode:0o600});
     success=true;
     console.log(`Audit complete: ${output}/report.md\nVerdict: ${report.verdict} | Runtime: ${report.runtime_status}`);
